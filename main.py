@@ -376,8 +376,9 @@ def _check_or_use_code(code: str, mark_used: bool, admin_id: int) -> str:
     partner = get_active_partner_by_id(partner_id)
     partner_name = partner[1] if partner else f"id={partner_id}"
     if mark_used:
-        use_discount_code(normalized_code, admin_id=admin_id)
-        return "Код применён ✅"
+        if use_discount_code(normalized_code, admin_id=admin_id):
+            return "Код применён ✅"
+        return "Код уже использован, истёк или недействителен"
 
     return (
         "Код действителен ✅\n"
@@ -419,6 +420,10 @@ def handle_admin_command(
         send_admin_message(vk_api, admin_id=admin_id, text=f"Пользователей: {count_users()}")
         return True
 
+    if text == "/checkcode":
+        send_admin_message(vk_api, admin_id=admin_id, text="Формат: /checkcode {code}")
+        return True
+
     if text.startswith("/checkcode "):
         parts = raw_text.split(maxsplit=1)
         if len(parts) != 2:
@@ -429,6 +434,10 @@ def handle_admin_command(
             admin_id=admin_id,
             text=_check_or_use_code(parts[1], mark_used=False, admin_id=admin_id),
         )
+        return True
+
+    if text == "/usecode":
+        send_admin_message(vk_api, admin_id=admin_id, text="Формат: /usecode {code}")
         return True
 
     if text.startswith("/usecode "):
@@ -481,19 +490,32 @@ def handle_admin_command(
         send_admin_message(vk_api, admin_id=admin_id, text="\n\n".join(lines))
         return True
 
+    if text == "/approve":
+        send_admin_message(vk_api, admin_id=admin_id, text="Формат: /approve {vk_id}")
+        return True
+
     if text.startswith("/approve "):
         parts = text.split()
         if len(parts) != 2 or not parts[1].isdigit():
+            send_admin_message(vk_api, admin_id=admin_id, text="Формат: /approve {vk_id}")
+            return True
+
+        if not club_invite_link:
+            send_admin_message(
+                vk_api,
+                admin_id=admin_id,
+                text="Ошибка: CLUB_INVITE_LINK не заполнен в .env. Заявка не подтверждена.",
+            )
             return True
 
         vk_id = int(parts[1])
         approved_data = approve_latest_request(vk_id=vk_id)
         if not approved_data:
-            send_admin_message(vk_api, admin_id=admin_id, text="У пользователя нет заявок")
-            return True
-
-        if not club_invite_link:
-            send_admin_message(vk_api, admin_id=admin_id, text="Ошибка: CLUB_INVITE_LINK не заполнен в .env")
+            send_admin_message(
+                vk_api,
+                admin_id=admin_id,
+                text="Нет оплаченной заявки со скрином для подтверждения. Проверьте /pending.",
+            )
             return True
 
         access_until, is_renewal = approved_data
@@ -527,9 +549,14 @@ def handle_admin_command(
         send_admin_message(vk_api, admin_id=admin_id, text="\n".join(lines))
         return True
 
+    if text == "/user":
+        send_admin_message(vk_api, admin_id=admin_id, text="Формат: /user {vk_id}")
+        return True
+
     if text.startswith("/user "):
         parts = text.split()
         if len(parts) != 2 or not parts[1].isdigit():
+            send_admin_message(vk_api, admin_id=admin_id, text="Формат: /user {vk_id}")
             return True
 
         vk_id = int(parts[1])
