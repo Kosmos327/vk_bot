@@ -2,8 +2,10 @@ import logging
 import os
 import random
 import re
+import sqlite3
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -19,11 +21,20 @@ from db import (
     count_requests,
     count_users,
     create_request,
+    create_discount_code,
+    confirm_discount_code_intent,
+    count_user_discount_codes_today,
     get_vk_id_by_referral_code,
+    get_active_discount_code_for_partner,
+    get_active_partner_by_id,
+    get_discount_code_details,
+    get_pending_discount_code_intent,
     get_user_referral_details,
     get_user_by_vk_id,
+    has_active_access,
     list_active_partners,
     list_partners,
+    list_recent_discount_codes,
     list_referrers_by_approved_count,
     init_db,
     list_active_users,
@@ -37,9 +48,12 @@ from db import (
     set_partner_active,
     set_latest_request_status,
     touch_user_activity,
+    upsert_discount_code_intent,
+    use_discount_code,
 )
 from keyboards import (
     BUTTON_ADMIN_ACTIVE,
+    BUTTON_ADMIN_CODES,
     BUTTON_ADMIN_EXPIRED,
     BUTTON_ADMIN_PENDING,
     BUTTON_ADMIN_PARTNERS,
@@ -50,6 +64,7 @@ from keyboards import (
     BUTTON_PARTNERS,
     BUTTON_PAYMENT,
     BUTTON_MY_LINK,
+    BUTTON_GET_DISCOUNT,
     BUTTON_QUESTION,
     get_admin_keyboard,
     get_main_keyboard,
@@ -73,10 +88,12 @@ logging.basicConfig(
 logger = logging.getLogger("vk_bot")
 
 
-PAID_CONFIRMATION_TEXT = "Отлично, отправь скрин оплаты. Администратор проверит и даст доступ."
+PAID_CONFIRMATION_TEXT = "Отлично, отправьте скрин оплаты. Администратор проверит и предоставит доступ."
 RECEIPT_RECEIVED_TEXT = "Скрин оплаты получен ✅ Администратор проверит оплату и выдаст доступ."
-NO_REQUEST_FOR_RECEIPT_TEXT = "Я получил файл, но сначала нажми «Как оплатить», чтобы создать заявку."
+NO_REQUEST_FOR_RECEIPT_TEXT = "Я получил файл, но сначала нажмите «Как оплатить», чтобы создать заявку."
 REFERRAL_PATTERN = re.compile(r"^\s*(?:старт|start)\s+(AC\d+)\s*$", re.IGNORECASE)
+DISCOUNT_PARTNER_PATTERN = re.compile(r"^\s*скидка\s+(\d+)\s*$", re.IGNORECASE)
+DISCOUNT_CONFIRM_PATTERN = re.compile(r"^\s*да\s+(\d+)\s*$", re.IGNORECASE)
 
 
 def get_env(name: str) -> str:
@@ -209,11 +226,166 @@ def extract_referral_code(raw_text: str) -> Optional[str]:
 def build_my_referral_text(group_id: int, vk_id: int) -> str:
     referral_code = f"AC{vk_id}"
     return (
-        "Твоя реферальная ссылка:\n\n"
+        "Ваша реферальная ссылка:\n\n"
         f"https://vk.com/im?sel=-{group_id}&ref={referral_code}\n\n"
-        "Приглашай друзей в АвтоКлуб НСК.\n\n"
-        f"Твой код: {referral_code}\n"
+        "Приглашайте друзей в АвтоКлуб НСК.\n\n"
+        f"Ваш код: {referral_code}\n"
         f"Друг может написать: СТАРТ {referral_code}"
+    )
+
+
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _build_get_discount_response(vk_id: int) -> str:
+    if not has_active_access(vk_id):
+        return "Скидки доступны только участникам с активным доступом. Нажмите «Как оплатить», чтобы оформить доступ."
+
+    partners = list_active_partners()
+    if not partners:
+        return "Сейчас нет активных партнёров со скидками."
+
+    lines = ["Доступные партнёры:\n"]
+    for partner_id, name, _, discount, _, _, _ in partners:
+        lines.append(f"{partner_id}. {name} — {_safe_text(discount)}")
+    lines.append(
+        "\nВыберите партнёра только тогда, когда вы уже находитесь на месте и готовы воспользоваться скидкой.\n\n"
+        "Код действует 15 минут.\n\n"
+        "Чтобы выбрать партнёра, напишите:\n"
+        "скидка {id}"
+    )
+    return "\n".join(lines)
+
+
+def _handle_discount_partner_choice(text: str, from_id: int) -> Optional[str]:
+    match = DISCOUNT_PARTNER_PATTERN.match(text)
+    if not match:
+        return None
+
+    partner_id = int(match.group(1))
+    if not has_active_access(from_id):
+        return "Скидки доступны только участникам с активным доступом. Нажмите «Как оплатить», чтобы оформить доступ."
+
+    partner = get_active_partner_by_id(partner_id)
+    if not partner:
+        return "Партнёр не найден или сейчас недоступен."
+
+    _, partner_name, discount = partner
+    intent_expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+    upsert_discount_code_intent(vk_id=from_id, partner_id=partner_id, expires_at=intent_expires_at)
+
+    return (
+        "Вы выбрали партнёра:\n"
+        f"{partner_name}\n\n"
+        f"Скидка: {_safe_text(discount)}\n\n"
+        "Код будет действовать 15 минут.\n"
+        "Создавайте код только тогда, когда вы уже находитесь у партнёра.\n\n"
+        "Создать код сейчас?\n\n"
+        "Напишите:\n"
+        f"ДА {partner_id}"
+    )
+
+
+def _handle_discount_confirmation(text: str, from_id: int) -> Optional[str]:
+    match = DISCOUNT_CONFIRM_PATTERN.match(text)
+    if not match:
+        return None
+
+    partner_id = int(match.group(1))
+    if not has_active_access(from_id):
+        return "Скидки доступны только участникам с активным доступом. Нажмите «Как оплатить», чтобы оформить доступ."
+
+    partner = get_active_partner_by_id(partner_id)
+    if not partner:
+        return "Партнёр не найден или сейчас недоступен."
+
+    intent = get_pending_discount_code_intent(vk_id=from_id, partner_id=partner_id)
+    if not intent:
+        return f"Подтверждение истекло. Напишите снова: скидка {partner_id}"
+
+    intent_id, intent_expires_at = intent
+    intent_expires_at_dt = _parse_iso(intent_expires_at)
+    if not intent_expires_at_dt or intent_expires_at_dt <= datetime.utcnow():
+        return f"Подтверждение истекло. Напишите снова: скидка {partner_id}"
+
+    if count_user_discount_codes_today(from_id) >= 5:
+        return "На сегодня достигнут лимит: не более 5 кодов в день."
+
+    active_code = get_active_discount_code_for_partner(vk_id=from_id, partner_id=partner_id)
+    if active_code:
+        return "У вас уже есть активный код для этого партнёра. Используйте его или дождитесь окончания срока действия."
+
+    expires_at = (datetime.utcnow() + timedelta(minutes=15)).isoformat()
+    code = ""
+    for _ in range(10):
+        candidate = f"AC-{random.randint(0, 999999):06d}"
+        try:
+            create_discount_code(code=candidate, vk_id=from_id, partner_id=partner_id, expires_at=expires_at)
+            code = candidate
+            break
+        except sqlite3.IntegrityError:
+            continue
+    if not code:
+        return f"Не удалось создать код. Пожалуйста, напишите ещё раз: ДА {partner_id}"
+    confirm_discount_code_intent(intent_id=intent_id)
+
+    _, partner_name, discount = partner
+    return (
+        "Ваш код скидки:\n\n"
+        f"{code}\n\n"
+        f"Партнёр: {partner_name}\n"
+        f"Скидка: {_safe_text(discount)}\n"
+        f"Действует до: {expires_at}\n\n"
+        "Покажите этот код партнёру."
+    )
+
+
+def _check_or_use_code(code: str, mark_used: bool, admin_id: int) -> str:
+    normalized_code = code.strip().upper()
+    details = get_discount_code_details(normalized_code)
+    if not details:
+        return "Код не найден"
+
+    (
+        _id,
+        _code,
+        vk_id,
+        partner_id,
+        status,
+        _created_at,
+        expires_at,
+        _used_at,
+        _used_by_admin_id,
+        first_name,
+        last_name,
+        discount,
+    ) = details
+
+    expires_at_dt = _parse_iso(expires_at)
+    if status != "active":
+        return "Код уже использован или недействителен"
+    if not expires_at_dt or expires_at_dt < datetime.utcnow():
+        return "Код истёк"
+
+    partner = get_active_partner_by_id(partner_id)
+    partner_name = partner[1] if partner else f"id={partner_id}"
+    if mark_used:
+        use_discount_code(normalized_code, admin_id=admin_id)
+        return "Код применён ✅"
+
+    return (
+        "Код действителен ✅\n"
+        f"Участник: {first_name} {last_name}\n"
+        f"VK ID: {vk_id}\n"
+        f"Партнёр: {partner_name}\n"
+        f"Скидка: {_safe_text(discount)}\n"
+        f"Действует до: {expires_at}"
     )
 
 
@@ -240,9 +412,47 @@ def handle_admin_command(
         text = "/requests"
     elif text == normalize_text(BUTTON_ADMIN_PARTNERS):
         text = "/partners"
+    elif text == normalize_text(BUTTON_ADMIN_CODES):
+        text = "/codes"
 
     if text == "/users":
         send_admin_message(vk_api, admin_id=admin_id, text=f"Пользователей: {count_users()}")
+        return True
+
+    if text.startswith("/checkcode "):
+        parts = raw_text.split(maxsplit=1)
+        if len(parts) != 2:
+            send_admin_message(vk_api, admin_id=admin_id, text="Формат: /checkcode {code}")
+            return True
+        send_admin_message(
+            vk_api,
+            admin_id=admin_id,
+            text=_check_or_use_code(parts[1], mark_used=False, admin_id=admin_id),
+        )
+        return True
+
+    if text.startswith("/usecode "):
+        parts = raw_text.split(maxsplit=1)
+        if len(parts) != 2:
+            send_admin_message(vk_api, admin_id=admin_id, text="Формат: /usecode {code}")
+            return True
+        send_admin_message(
+            vk_api,
+            admin_id=admin_id,
+            text=_check_or_use_code(parts[1], mark_used=True, admin_id=admin_id),
+        )
+        return True
+
+    if text == "/codes":
+        codes = list_recent_discount_codes(limit=20)
+        if not codes:
+            send_admin_message(vk_api, admin_id=admin_id, text="Кодов пока нет")
+            return True
+        lines = [
+            f"{code} | {vk_id} | {partner_id} | {status} | {expires_at or '-'} | {used_at or '-'}"
+            for code, vk_id, partner_id, status, expires_at, used_at in codes
+        ]
+        send_admin_message(vk_api, admin_id=admin_id, text="\n".join(lines))
         return True
 
     if text == "/requests":
@@ -472,10 +682,13 @@ def handle_business_actions(vk_api, text: str, from_id: int, admin_id: int, grou
         if updated:
             send_admin_notification(vk_api, admin_id=admin_id, vk_id=from_id, status="paid")
             return PAID_CONFIRMATION_TEXT
-        return "У тебя пока нет заявки. Нажми «Как оплатить», чтобы создать заявку."
+        return "У вас пока нет заявки. Нажмите «Как оплатить», чтобы создать заявку."
 
     if text == BUTTON_MY_LINK.lower():
         return build_my_referral_text(group_id=group_id, vk_id=from_id)
+
+    if text == BUTTON_GET_DISCOUNT.lower():
+        return _build_get_discount_response(from_id)
 
     return None
 
@@ -551,6 +764,16 @@ def main() -> None:
                     )
                     if business_response is not None:
                         send_message(vk_api, peer_id=peer_id, text=business_response)
+                        continue
+
+                    discount_partner_response = _handle_discount_partner_choice(raw_text, from_id=from_id)
+                    if discount_partner_response is not None:
+                        send_message(vk_api, peer_id=peer_id, text=discount_partner_response)
+                        continue
+
+                    discount_confirm_response = _handle_discount_confirmation(raw_text, from_id=from_id)
+                    if discount_confirm_response is not None:
+                        send_message(vk_api, peer_id=peer_id, text=discount_confirm_response)
                         continue
 
                     response = resolve_response(incoming_text)

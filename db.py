@@ -113,6 +113,33 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS discount_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                vk_id INTEGER NOT NULL,
+                partner_id INTEGER NOT NULL,
+                status TEXT DEFAULT 'active',
+                created_at TEXT,
+                expires_at TEXT,
+                used_at TEXT,
+                used_by_admin_id INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS discount_code_intents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vk_id INTEGER NOT NULL,
+                partner_id INTEGER NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT,
+                expires_at TEXT
+            )
+            """
+        )
         _migrate_users_table(conn)
         _migrate_requests_table(conn)
         _migrate_referrals_table(conn)
@@ -608,3 +635,192 @@ def get_user_details(vk_id: int) -> Optional[Tuple]:
             return (*user_row, None, None, None, None, None, None)
 
         return (*user_row, *request_row)
+
+
+def has_active_access(vk_id: int) -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM requests
+            WHERE vk_id = ? AND status = 'approved' AND access_until > ?
+            ORDER BY access_until DESC
+            LIMIT 1
+            """,
+            (vk_id, _now()),
+        ).fetchone()
+        return row is not None
+
+
+def get_active_partner_by_id(partner_id: int) -> Optional[Tuple[int, str, Optional[str]]]:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, name, discount
+            FROM partners
+            WHERE id = ? AND is_active = 1
+            """,
+            (partner_id,),
+        ).fetchone()
+        return row
+
+
+def upsert_discount_code_intent(vk_id: int, partner_id: int, expires_at: str) -> None:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM discount_code_intents
+            WHERE vk_id = ? AND partner_id = ? AND status = 'pending'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (vk_id, partner_id),
+        ).fetchone()
+        if row:
+            conn.execute(
+                """
+                UPDATE discount_code_intents
+                SET created_at = ?, expires_at = ?, status = 'pending'
+                WHERE id = ?
+                """,
+                (_now(), expires_at, row[0]),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO discount_code_intents (vk_id, partner_id, status, created_at, expires_at)
+                VALUES (?, ?, 'pending', ?, ?)
+                """,
+                (vk_id, partner_id, _now(), expires_at),
+            )
+        conn.commit()
+
+
+def get_pending_discount_code_intent(vk_id: int, partner_id: int) -> Optional[Tuple[int, str]]:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, expires_at
+            FROM discount_code_intents
+            WHERE vk_id = ? AND partner_id = ? AND status = 'pending'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (vk_id, partner_id),
+        ).fetchone()
+        return row
+
+
+def confirm_discount_code_intent(intent_id: int) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE discount_code_intents SET status = 'confirmed' WHERE id = ?",
+            (intent_id,),
+        )
+        conn.commit()
+
+
+def count_user_discount_codes_today(vk_id: int) -> int:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM discount_codes
+            WHERE vk_id = ? AND DATE(created_at) = DATE(?)
+            """,
+            (vk_id, _now()),
+        ).fetchone()
+        return row[0] if row else 0
+
+
+def get_active_discount_code_for_partner(
+    vk_id: int, partner_id: int
+) -> Optional[Tuple[str, str]]:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT code, expires_at
+            FROM discount_codes
+            WHERE vk_id = ? AND partner_id = ? AND status = 'active' AND expires_at > ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (vk_id, partner_id, _now()),
+        ).fetchone()
+        return row
+
+
+def create_discount_code(code: str, vk_id: int, partner_id: int, expires_at: str) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO discount_codes (code, vk_id, partner_id, status, created_at, expires_at)
+            VALUES (?, ?, ?, 'active', ?, ?)
+            """,
+            (code, vk_id, partner_id, _now(), expires_at),
+        )
+        conn.commit()
+
+
+def get_discount_code_details(
+    code: str,
+) -> Optional[Tuple[int, str, int, int, str, Optional[str], Optional[str], Optional[str], Optional[int], str, str, Optional[str]]]:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                dc.id,
+                dc.code,
+                dc.vk_id,
+                dc.partner_id,
+                dc.status,
+                dc.created_at,
+                dc.expires_at,
+                dc.used_at,
+                dc.used_by_admin_id,
+                COALESCE(u.first_name, ''),
+                COALESCE(u.last_name, ''),
+                p.discount
+            FROM discount_codes dc
+            LEFT JOIN users u ON u.vk_id = dc.vk_id
+            LEFT JOIN partners p ON p.id = dc.partner_id
+            WHERE dc.code = ?
+            """,
+            (code,),
+        ).fetchone()
+        return row
+
+
+def list_recent_discount_codes(limit: int = 20) -> List[Tuple[str, int, int, str, Optional[str], Optional[str]]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT code, vk_id, partner_id, status, expires_at, used_at
+            FROM discount_codes
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return rows
+
+
+def use_discount_code(code: str, admin_id: int) -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM discount_codes WHERE code = ?",
+            (code,),
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            """
+            UPDATE discount_codes
+            SET status = 'used', used_at = ?, used_by_admin_id = ?
+            WHERE code = ?
+            """,
+            (_now(), admin_id, code),
+        )
+        conn.commit()
+        return True
