@@ -11,12 +11,15 @@ from vk_api.exceptions import ApiError
 
 from db import (
     add_user_if_not_exists,
+    approve_latest_request,
     count_requests,
     count_users,
     create_request,
     get_user_by_vk_id,
     init_db,
+    list_pending_requests,
     list_requests,
+    mark_latest_request_receipt,
     set_latest_request_status,
 )
 from keyboards import (
@@ -46,7 +49,8 @@ logger = logging.getLogger("vk_bot")
 
 
 PAID_CONFIRMATION_TEXT = "Отлично, отправь скрин оплаты. Администратор проверит и даст доступ."
-APPROVED_TEXT = "Оплата подтверждена ✅\nСкоро тебе выдадут доступ в закрытый клуб"
+RECEIPT_RECEIVED_TEXT = "Скрин оплаты получен ✅ Администратор проверит оплату и выдаст доступ."
+NO_REQUEST_FOR_RECEIPT_TEXT = "Я получил файл, но сначала нажми «Как оплатить», чтобы создать заявку."
 
 
 def get_env(name: str) -> str:
@@ -96,6 +100,19 @@ def send_admin_notification(vk_api, admin_id: int, vk_id: int, status: str) -> N
     send_message(vk_api, peer_id=admin_id, text=admin_text)
 
 
+def send_receipt_notification(vk_api, admin_id: int, vk_id: int) -> None:
+    user = get_user_by_vk_id(vk_id)
+    first_name = user[1] if user else ""
+    last_name = user[2] if user else ""
+    admin_text = (
+        "Поступил скрин оплаты\n"
+        f"ID пользователя: {vk_id}\n"
+        f"Имя: {first_name} {last_name}\n"
+        "Статус: paid"
+    )
+    send_message(vk_api, peer_id=admin_id, text=admin_text)
+
+
 def save_user(vk_api, from_id: int) -> None:
     user_info = vk_api.users.get(user_ids=from_id)
     if not user_info:
@@ -108,7 +125,26 @@ def save_user(vk_api, from_id: int) -> None:
     )
 
 
-def handle_admin_command(vk_api, text: str, admin_id: int) -> bool:
+def has_receipt_attachment(message: dict) -> bool:
+    attachments = message.get("attachments", [])
+    for attachment in attachments:
+        attachment_type = attachment.get("type")
+        if attachment_type in {"photo", "doc"}:
+            return True
+    return False
+
+
+def build_approved_text(club_invite_link: str) -> str:
+    return (
+        "Оплата подтверждена ✅\n\n"
+        "Добро пожаловать в АвтоКлуб НСК!\n\n"
+        "Ссылка для входа в закрытый клуб:\n"
+        f"{club_invite_link}\n\n"
+        "Доступ действует 30 дней."
+    )
+
+
+def handle_admin_command(vk_api, text: str, admin_id: int, club_invite_link: str) -> bool:
     if text == "/users":
         send_message(vk_api, peer_id=admin_id, text=f"Пользователей: {count_users()}")
         return True
@@ -119,7 +155,23 @@ def handle_admin_command(vk_api, text: str, admin_id: int) -> bool:
             send_message(vk_api, peer_id=admin_id, text="Заявок пока нет")
             return True
 
-        lines = [f"{vk_id} | {status}" for vk_id, status in requests]
+        lines = [
+            f"{vk_id} | {status} | {receipt_received} | {created_at}"
+            for vk_id, status, receipt_received, created_at in requests
+        ]
+        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        return True
+
+    if text == "/pending":
+        requests = list_pending_requests()
+        if not requests:
+            send_message(vk_api, peer_id=admin_id, text="Нет заявок в статусе paid")
+            return True
+
+        lines = [
+            f"{vk_id} | {status} | {receipt_received} | {created_at}"
+            for vk_id, status, receipt_received, created_at in requests
+        ]
         send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
         return True
 
@@ -129,13 +181,17 @@ def handle_admin_command(vk_api, text: str, admin_id: int) -> bool:
             return True
 
         vk_id = int(parts[1])
-        updated = set_latest_request_status(vk_id=vk_id, status="approved")
+        updated = approve_latest_request(vk_id=vk_id)
         if not updated:
             send_message(vk_api, peer_id=admin_id, text="У пользователя нет заявок")
             return True
 
-        send_message(vk_api, peer_id=vk_id, text=APPROVED_TEXT)
-        send_message(vk_api, peer_id=admin_id, text=f"Заявка {vk_id} подтверждена")
+        if not club_invite_link:
+            send_message(vk_api, peer_id=admin_id, text="Ошибка: CLUB_INVITE_LINK не заполнен в .env")
+            return True
+
+        send_message(vk_api, peer_id=vk_id, text=build_approved_text(club_invite_link))
+        send_message(vk_api, peer_id=admin_id, text=f"Пользователь {vk_id} подтверждён, ссылка отправлена.")
         return True
 
     if text == "/stats":
@@ -162,12 +218,24 @@ def handle_business_actions(vk_api, text: str, from_id: int, admin_id: int) -> O
     return None
 
 
+def handle_receipt(vk_api, from_id: int, peer_id: int, admin_id: int) -> bool:
+    updated_status = mark_latest_request_receipt(vk_id=from_id)
+    if updated_status is None:
+        send_message(vk_api, peer_id=peer_id, text=NO_REQUEST_FOR_RECEIPT_TEXT)
+        return True
+
+    send_message(vk_api, peer_id=peer_id, text=RECEIPT_RECEIVED_TEXT)
+    send_receipt_notification(vk_api, admin_id=admin_id, vk_id=from_id)
+    return True
+
+
 def main() -> None:
     load_dotenv()
 
     group_token = get_env("VK_GROUP_TOKEN")
     group_id = int(get_env("VK_GROUP_ID"))
     admin_id = int(get_env("ADMIN_ID"))
+    club_invite_link = os.getenv("CLUB_INVITE_LINK", "").strip()
 
     init_db()
 
@@ -184,17 +252,24 @@ def main() -> None:
                     continue
 
                 try:
-                    incoming_text = normalize_text(event.object.message.get("text"))
-                    peer_id = event.object.message["peer_id"]
-                    from_id = event.object.message.get("from_id")
+                    message = event.object.message
+                    incoming_text = normalize_text(message.get("text"))
+                    peer_id = message["peer_id"]
+                    from_id = message.get("from_id")
 
                     if not from_id:
                         continue
 
                     save_user(vk_api, from_id)
 
-                    if from_id == admin_id and handle_admin_command(vk_api, incoming_text, admin_id):
+                    if from_id == admin_id and handle_admin_command(
+                        vk_api, incoming_text, admin_id, club_invite_link
+                    ):
                         continue
+
+                    if has_receipt_attachment(message):
+                        if handle_receipt(vk_api, from_id=from_id, peer_id=peer_id, admin_id=admin_id):
+                            continue
 
                     business_response = handle_business_actions(
                         vk_api, text=incoming_text, from_id=from_id, admin_id=admin_id
