@@ -113,6 +113,10 @@ def send_message(vk_api, peer_id: int, text: str, keyboard: Optional[str] = None
     )
 
 
+def send_admin_message(vk_api, admin_id: int, text: str) -> None:
+    send_message(vk_api, peer_id=admin_id, text=text, keyboard=get_admin_keyboard())
+
+
 def _safe_text(value: Optional[str]) -> str:
     return value if value else "—"
 
@@ -144,7 +148,7 @@ def send_admin_notification(vk_api, admin_id: int, vk_id: int, status: str) -> N
         f"Имя: {first_name} {last_name}".strip()
         + f"\nСтатус: {status}"
     )
-    send_message(vk_api, peer_id=admin_id, text=admin_text)
+    send_admin_message(vk_api, admin_id=admin_id, text=admin_text)
 
 
 def send_receipt_notification(vk_api, admin_id: int, vk_id: int) -> None:
@@ -157,7 +161,7 @@ def send_receipt_notification(vk_api, admin_id: int, vk_id: int) -> None:
         f"Имя: {first_name} {last_name}\n"
         "Статус: paid"
     )
-    send_message(vk_api, peer_id=admin_id, text=admin_text)
+    send_admin_message(vk_api, admin_id=admin_id, text=admin_text)
 
 
 def save_user(vk_api, from_id: int, referral_code: Optional[str] = None) -> None:
@@ -221,12 +225,7 @@ def handle_admin_command(
     raw_text: str,
 ) -> bool:
     if text == "/admin":
-        send_message(
-            vk_api,
-            peer_id=admin_id,
-            text="Админ-панель АвтоКлуб НСК",
-            keyboard=get_admin_keyboard(),
-        )
+        send_admin_message(vk_api, admin_id=admin_id, text="Админ-панель АвтоКлуб НСК")
         return True
 
     if text == normalize_text(BUTTON_ADMIN_STATS):
@@ -243,33 +242,33 @@ def handle_admin_command(
         text = "/partners"
 
     if text == "/users":
-        send_message(vk_api, peer_id=admin_id, text=f"Пользователей: {count_users()}")
+        send_admin_message(vk_api, admin_id=admin_id, text=f"Пользователей: {count_users()}")
         return True
 
     if text == "/requests":
         requests = list_requests()
         if not requests:
-            send_message(vk_api, peer_id=admin_id, text="Заявок пока нет")
+            send_admin_message(vk_api, admin_id=admin_id, text="Заявок пока нет")
             return True
 
         lines = [
             f"{vk_id} | {status} | {receipt_received} | {created_at} | {approved_at or '-'} | {access_until or '-'}"
             for vk_id, status, receipt_received, created_at, approved_at, access_until in requests
         ]
-        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        send_admin_message(vk_api, admin_id=admin_id, text="\n".join(lines))
         return True
 
     if text == "/pending":
         requests = list_pending_requests()
         if not requests:
-            send_message(vk_api, peer_id=admin_id, text="Нет заявок в статусе paid")
+            send_admin_message(vk_api, admin_id=admin_id, text="Нет заявок в статусе paid")
             return True
 
         lines = [
             f"{vk_id} | {status} | {receipt_received} | {created_at}\nПодтвердить: /approve {vk_id}"
             for vk_id, status, receipt_received, created_at in requests
         ]
-        send_message(vk_api, peer_id=admin_id, text="\n\n".join(lines))
+        send_admin_message(vk_api, admin_id=admin_id, text="\n\n".join(lines))
         return True
 
     if text.startswith("/approve "):
@@ -280,20 +279,20 @@ def handle_admin_command(
         vk_id = int(parts[1])
         approved_data = approve_latest_request(vk_id=vk_id)
         if not approved_data:
-            send_message(vk_api, peer_id=admin_id, text="У пользователя нет заявок")
+            send_admin_message(vk_api, admin_id=admin_id, text="У пользователя нет заявок")
             return True
 
         if not club_invite_link:
-            send_message(vk_api, peer_id=admin_id, text="Ошибка: CLUB_INVITE_LINK не заполнен в .env")
+            send_admin_message(vk_api, admin_id=admin_id, text="Ошибка: CLUB_INVITE_LINK не заполнен в .env")
             return True
 
         access_until, is_renewal = approved_data
         mark_referral_approved(vk_id)
         send_message(vk_api, peer_id=vk_id, text=build_approved_text(club_invite_link, access_until))
         renewal_note = " (продление)" if is_renewal else ""
-        send_message(
+        send_admin_message(
             vk_api,
-            peer_id=admin_id,
+            admin_id=admin_id,
             text=f"Пользователь {vk_id} подтверждён{renewal_note}, ссылка отправлена.",
         )
         return True
@@ -301,21 +300,21 @@ def handle_admin_command(
     if text == "/active":
         active_users = list_active_users()
         if not active_users:
-            send_message(vk_api, peer_id=admin_id, text="Нет пользователей с активным доступом")
+            send_admin_message(vk_api, admin_id=admin_id, text="Нет пользователей с активным доступом")
             return True
 
         lines = [f"{vk_id} | {access_until}" for vk_id, access_until in active_users]
-        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        send_admin_message(vk_api, admin_id=admin_id, text="\n".join(lines))
         return True
 
     if text == "/expired":
         expired_users = list_expired_users()
         if not expired_users:
-            send_message(vk_api, peer_id=admin_id, text="Нет пользователей с истёкшим доступом")
+            send_admin_message(vk_api, admin_id=admin_id, text="Нет пользователей с истёкшим доступом")
             return True
 
         lines = [f"{vk_id} | {access_until}" for vk_id, access_until in expired_users]
-        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        send_admin_message(vk_api, admin_id=admin_id, text="\n".join(lines))
         return True
 
     if text.startswith("/user "):
@@ -326,7 +325,7 @@ def handle_admin_command(
         vk_id = int(parts[1])
         user_details = get_user_details(vk_id)
         if not user_details:
-            send_message(vk_api, peer_id=admin_id, text="Пользователь не найден")
+            send_admin_message(vk_api, admin_id=admin_id, text="Пользователь не найден")
             return True
 
         (
@@ -353,38 +352,38 @@ def handle_admin_command(
             f"access_until: {access_until or '-'}\n"
             f"is_renewal: {is_renewal if is_renewal is not None else '-'}"
         )
-        send_message(vk_api, peer_id=admin_id, text=details_text)
+        send_admin_message(vk_api, admin_id=admin_id, text=details_text)
         return True
 
     if text == "/stats":
         stats_text = f"Пользователей: {count_users()}\nЗаявок: {count_requests()}"
-        send_message(vk_api, peer_id=admin_id, text=stats_text)
+        send_admin_message(vk_api, admin_id=admin_id, text=stats_text)
         return True
 
     if text == "/referrals":
         referrals = list_referrers_by_approved_count()
         if not referrals:
-            send_message(vk_api, peer_id=admin_id, text="Подтверждённых рефералов пока нет")
+            send_admin_message(vk_api, admin_id=admin_id, text="Подтверждённых рефералов пока нет")
             return True
         lines = [f"{referrer_vk_id} | {approved_count}" for referrer_vk_id, approved_count in referrals]
-        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        send_admin_message(vk_api, admin_id=admin_id, text="\n".join(lines))
         return True
 
     if text.startswith("/refuser "):
         parts = text.split()
         if len(parts) != 2 or not parts[1].isdigit():
-            send_message(vk_api, peer_id=admin_id, text="Формат: /refuser {vk_id}")
+            send_admin_message(vk_api, admin_id=admin_id, text="Формат: /refuser {vk_id}")
             return True
         vk_id = int(parts[1])
         details = get_user_referral_details(vk_id)
         if not details:
-            send_message(vk_api, peer_id=admin_id, text="Пользователь не найден")
+            send_admin_message(vk_api, admin_id=admin_id, text="Пользователь не найден")
             return True
         user_vk_id, referral_code, referrer_vk_id = details
         approved_count = count_user_approved_referrals(user_vk_id)
-        send_message(
+        send_admin_message(
             vk_api,
-            peer_id=admin_id,
+            admin_id=admin_id,
             text=(
                 f"vk_id: {user_vk_id}\n"
                 f"referral_code: {referral_code or '-'}\n"
@@ -397,45 +396,45 @@ def handle_admin_command(
     if text == "/partners":
         partners = list_partners()
         if not partners:
-            send_message(vk_api, peer_id=admin_id, text="Партнёров пока нет")
+            send_admin_message(vk_api, admin_id=admin_id, text="Партнёров пока нет")
             return True
 
         lines = [f"{partner_id} | {name} | {category or '-'} | {discount or '-'} | {is_active}" for partner_id, name, category, discount, is_active in partners]
-        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        send_admin_message(vk_api, admin_id=admin_id, text="\n".join(lines))
         return True
 
     if text.startswith("/partneroff "):
         parts = text.split()
         if len(parts) != 2 or not parts[1].isdigit():
-            send_message(vk_api, peer_id=admin_id, text="Формат: /partneroff {id}")
+            send_admin_message(vk_api, admin_id=admin_id, text="Формат: /partneroff {id}")
             return True
 
         partner_id = int(parts[1])
         if not set_partner_active(partner_id=partner_id, is_active=0):
-            send_message(vk_api, peer_id=admin_id, text="Партнёр с таким id не найден")
+            send_admin_message(vk_api, admin_id=admin_id, text="Партнёр с таким id не найден")
             return True
-        send_message(vk_api, peer_id=admin_id, text=f"Партнёр {partner_id} деактивирован")
+        send_admin_message(vk_api, admin_id=admin_id, text=f"Партнёр {partner_id} деактивирован")
         return True
 
     if text.startswith("/partneron "):
         parts = text.split()
         if len(parts) != 2 or not parts[1].isdigit():
-            send_message(vk_api, peer_id=admin_id, text="Формат: /partneron {id}")
+            send_admin_message(vk_api, admin_id=admin_id, text="Формат: /partneron {id}")
             return True
 
         partner_id = int(parts[1])
         if not set_partner_active(partner_id=partner_id, is_active=1):
-            send_message(vk_api, peer_id=admin_id, text="Партнёр с таким id не найден")
+            send_admin_message(vk_api, admin_id=admin_id, text="Партнёр с таким id не найден")
             return True
-        send_message(vk_api, peer_id=admin_id, text=f"Партнёр {partner_id} активирован")
+        send_admin_message(vk_api, admin_id=admin_id, text=f"Партнёр {partner_id} активирован")
         return True
 
     if text.startswith("/addpartner"):
         parts = [part.strip() for part in raw_text.split("|")]
         if len(parts) != 7 or parts[0].strip().lower() != "/addpartner":
-            send_message(
+            send_admin_message(
                 vk_api,
-                peer_id=admin_id,
+                admin_id=admin_id,
                 text=(
                     "Формат:\n"
                     "/addpartner | Название | Категория | Скидка | Адрес | Телефон | Описание"
@@ -445,7 +444,7 @@ def handle_admin_command(
 
         _, name, category, discount, address, phone, description = parts
         if not name:
-            send_message(vk_api, peer_id=admin_id, text="Название партнёра обязательно")
+            send_admin_message(vk_api, admin_id=admin_id, text="Название партнёра обязательно")
             return True
 
         partner_id = add_partner(
@@ -456,7 +455,7 @@ def handle_admin_command(
             phone=phone,
             description=description,
         )
-        send_message(vk_api, peer_id=admin_id, text=f"Партнёр добавлен с id={partner_id}")
+        send_admin_message(vk_api, admin_id=admin_id, text=f"Партнёр добавлен с id={partner_id}")
         return True
 
     return False
