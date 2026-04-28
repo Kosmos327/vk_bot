@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import time
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -8,8 +9,19 @@ from vk_api import VkApi
 from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
 from vk_api.exceptions import ApiError
 
+from db import (
+    add_user_if_not_exists,
+    count_requests,
+    count_users,
+    create_request,
+    get_user_by_vk_id,
+    init_db,
+    list_requests,
+    set_latest_request_status,
+)
 from keyboards import (
     BUTTON_BENEFITS,
+    BUTTON_PAID,
     BUTTON_PARTNERS,
     BUTTON_PAYMENT,
     BUTTON_QUESTION,
@@ -31,6 +43,10 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("vk_bot")
+
+
+PAID_CONFIRMATION_TEXT = "Отлично, отправь скрин оплаты. Администратор проверит и даст доступ."
+APPROVED_TEXT = "Оплата подтверждена ✅\nСкоро тебе выдадут доступ в закрытый клуб"
 
 
 def get_env(name: str) -> str:
@@ -67,11 +83,93 @@ def send_message(vk_api, peer_id: int, text: str) -> None:
     )
 
 
+def send_admin_notification(vk_api, admin_id: int, vk_id: int, status: str) -> None:
+    user = get_user_by_vk_id(vk_id)
+    first_name = user[1] if user else ""
+    last_name = user[2] if user else ""
+    admin_text = (
+        "Новая заявка\n"
+        f"ID пользователя: {vk_id}\n"
+        f"Имя: {first_name} {last_name}".strip()
+        + f"\nСтатус: {status}"
+    )
+    send_message(vk_api, peer_id=admin_id, text=admin_text)
+
+
+def save_user(vk_api, from_id: int) -> None:
+    user_info = vk_api.users.get(user_ids=from_id)
+    if not user_info:
+        return
+    profile = user_info[0]
+    add_user_if_not_exists(
+        vk_id=from_id,
+        first_name=profile.get("first_name", ""),
+        last_name=profile.get("last_name", ""),
+    )
+
+
+def handle_admin_command(vk_api, text: str, admin_id: int) -> bool:
+    if text == "/users":
+        send_message(vk_api, peer_id=admin_id, text=f"Пользователей: {count_users()}")
+        return True
+
+    if text == "/requests":
+        requests = list_requests()
+        if not requests:
+            send_message(vk_api, peer_id=admin_id, text="Заявок пока нет")
+            return True
+
+        lines = [f"{vk_id} | {status}" for vk_id, status in requests]
+        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        return True
+
+    if text.startswith("/approve "):
+        parts = text.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            return True
+
+        vk_id = int(parts[1])
+        updated = set_latest_request_status(vk_id=vk_id, status="approved")
+        if not updated:
+            send_message(vk_api, peer_id=admin_id, text="У пользователя нет заявок")
+            return True
+
+        send_message(vk_api, peer_id=vk_id, text=APPROVED_TEXT)
+        send_message(vk_api, peer_id=admin_id, text=f"Заявка {vk_id} подтверждена")
+        return True
+
+    if text == "/stats":
+        stats_text = f"Пользователей: {count_users()}\nЗаявок: {count_requests()}"
+        send_message(vk_api, peer_id=admin_id, text=stats_text)
+        return True
+
+    return False
+
+
+def handle_business_actions(vk_api, text: str, from_id: int, admin_id: int) -> Optional[str]:
+    if text == BUTTON_PAYMENT.lower():
+        create_request(vk_id=from_id, status="new")
+        send_admin_notification(vk_api, admin_id=admin_id, vk_id=from_id, status="new")
+        return PAYMENT_TEXT
+
+    if text == BUTTON_PAID.lower():
+        updated = set_latest_request_status(vk_id=from_id, status="paid")
+        if updated:
+            send_admin_notification(vk_api, admin_id=admin_id, vk_id=from_id, status="paid")
+            return PAID_CONFIRMATION_TEXT
+        return "У тебя пока нет заявки. Нажми «Как оплатить», чтобы создать заявку."
+
+    return None
+
+
 def main() -> None:
     load_dotenv()
 
     group_token = get_env("VK_GROUP_TOKEN")
     group_id = int(get_env("VK_GROUP_ID"))
+    admin_id = int(get_env("ADMIN_ID"))
+
+    init_db()
 
     vk_session = VkApi(token=group_token)
     longpoll = VkBotLongPoll(vk_session, group_id)
@@ -88,6 +186,23 @@ def main() -> None:
                 try:
                     incoming_text = normalize_text(event.object.message.get("text"))
                     peer_id = event.object.message["peer_id"]
+                    from_id = event.object.message.get("from_id")
+
+                    if not from_id:
+                        continue
+
+                    save_user(vk_api, from_id)
+
+                    if from_id == admin_id and handle_admin_command(vk_api, incoming_text, admin_id):
+                        continue
+
+                    business_response = handle_business_actions(
+                        vk_api, text=incoming_text, from_id=from_id, admin_id=admin_id
+                    )
+                    if business_response is not None:
+                        send_message(vk_api, peer_id=peer_id, text=business_response)
+                        continue
+
                     response = resolve_response(incoming_text)
                     send_message(vk_api, peer_id=peer_id, text=response)
                 except ApiError:
@@ -96,8 +211,6 @@ def main() -> None:
                     logger.exception("Ошибка при обработке входящего сообщения")
         except Exception:
             logger.exception("Критическая ошибка цикла Long Poll, перезапуск через 3 секунды")
-            import time
-
             time.sleep(3)
 
 
