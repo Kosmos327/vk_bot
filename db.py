@@ -143,6 +143,42 @@ def init_db() -> None:
         _migrate_users_table(conn)
         _migrate_requests_table(conn)
         _migrate_referrals_table(conn)
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_requests_vk_id_id
+            ON requests(vk_id, id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_requests_status_approved
+            ON requests(status, approved_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_requests_access_until
+            ON requests(access_until)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_discount_codes_code_status
+            ON discount_codes(code, status)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_discount_codes_vk_created
+            ON discount_codes(vk_id, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_discount_code_intents_lookup
+            ON discount_code_intents(vk_id, partner_id, status)
+            """
+        )
         conn.commit()
 
 
@@ -517,7 +553,16 @@ def _calculate_access_period(conn: sqlite3.Connection, vk_id: int, now_iso: str)
 def approve_latest_request(vk_id: int) -> Optional[Tuple[str, int]]:
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id FROM requests WHERE vk_id = ? ORDER BY id DESC LIMIT 1",
+            """
+            SELECT id
+            FROM requests
+            WHERE vk_id = ?
+            AND status = 'paid'
+            AND receipt_received = 1
+            AND (approved_at IS NULL OR approved_at = '')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
             (vk_id,),
         ).fetchone()
         if not row:
@@ -808,19 +853,15 @@ def list_recent_discount_codes(limit: int = 20) -> List[Tuple[str, int, int, str
 
 def use_discount_code(code: str, admin_id: int) -> bool:
     with _connect() as conn:
-        row = conn.execute(
-            "SELECT id FROM discount_codes WHERE code = ?",
-            (code,),
-        ).fetchone()
-        if not row:
-            return False
-        conn.execute(
+        cursor = conn.execute(
             """
             UPDATE discount_codes
             SET status = 'used', used_at = ?, used_by_admin_id = ?
             WHERE code = ?
+            AND status = 'active'
+            AND expires_at > ?
             """,
-            (_now(), admin_id, code),
+            (_now(), admin_id, code, _now()),
         )
         conn.commit()
-        return True
+        return cursor.rowcount > 0
