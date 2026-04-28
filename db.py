@@ -29,6 +29,13 @@ def _migrate_requests_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE requests ADD COLUMN is_renewal INTEGER DEFAULT 0")
 
 
+def _migrate_users_table(conn: sqlite3.Connection) -> None:
+    if not _column_exists(conn, "users", "last_activity_at"):
+        conn.execute("ALTER TABLE users ADD COLUMN last_activity_at TEXT")
+    if not _column_exists(conn, "users", "last_message_sent_at"):
+        conn.execute("ALTER TABLE users ADD COLUMN last_message_sent_at TEXT")
+
+
 def init_db() -> None:
     with _connect() as conn:
         conn.execute(
@@ -38,7 +45,9 @@ def init_db() -> None:
                 vk_id INTEGER UNIQUE,
                 first_name TEXT,
                 last_name TEXT,
-                created_at TEXT
+                created_at TEXT,
+                last_activity_at TEXT,
+                last_message_sent_at TEXT
             )
             """
         )
@@ -56,6 +65,7 @@ def init_db() -> None:
             )
             """
         )
+        _migrate_users_table(conn)
         _migrate_requests_table(conn)
         conn.commit()
 
@@ -64,12 +74,123 @@ def add_user_if_not_exists(vk_id: int, first_name: str, last_name: str) -> None:
     with _connect() as conn:
         conn.execute(
             """
-            INSERT OR IGNORE INTO users (vk_id, first_name, last_name, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT OR IGNORE INTO users (
+                vk_id,
+                first_name,
+                last_name,
+                created_at,
+                last_activity_at
+            )
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (vk_id, first_name, last_name, _now()),
+            (vk_id, first_name, last_name, _now(), _now()),
         )
         conn.commit()
+
+
+def touch_user_activity(vk_id: int) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE users SET last_activity_at = ? WHERE vk_id = ?",
+            (_now(), vk_id),
+        )
+        conn.commit()
+
+
+def get_last_message_sent_at(vk_id: int) -> Optional[str]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT last_message_sent_at FROM users WHERE vk_id = ?",
+            (vk_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return row[0]
+
+
+def set_last_message_sent_at(vk_id: int) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE users SET last_message_sent_at = ? WHERE vk_id = ?",
+            (_now(), vk_id),
+        )
+        conn.commit()
+
+
+def list_users_for_incomplete_payment_followup() -> List[Tuple[int, str, Optional[str]]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.vk_id, r.created_at, u.last_message_sent_at
+            FROM requests r
+            JOIN users u ON u.vk_id = r.vk_id
+            WHERE r.id IN (
+                SELECT MAX(id)
+                FROM requests
+                GROUP BY vk_id
+            )
+            AND r.status = 'new'
+            """
+        ).fetchall()
+        return rows
+
+
+def list_users_with_unapproved_receipt() -> List[Tuple[int, str, Optional[str]]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.vk_id, r.created_at, u.last_message_sent_at
+            FROM requests r
+            JOIN users u ON u.vk_id = r.vk_id
+            WHERE r.id IN (
+                SELECT MAX(id)
+                FROM requests
+                GROUP BY vk_id
+            )
+            AND r.status = 'paid'
+            AND r.receipt_received = 1
+            AND (r.approved_at IS NULL OR r.approved_at = '')
+            """
+        ).fetchall()
+        return rows
+
+
+def list_users_access_expiring_soon() -> List[Tuple[int, str, Optional[str]]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.vk_id, r.access_until, u.last_message_sent_at
+            FROM requests r
+            JOIN users u ON u.vk_id = r.vk_id
+            WHERE r.id IN (
+                SELECT MAX(id)
+                FROM requests
+                GROUP BY vk_id
+            )
+            AND r.status = 'approved'
+            AND r.access_until IS NOT NULL
+            """
+        ).fetchall()
+        return rows
+
+
+def list_users_access_expired() -> List[Tuple[int, str, Optional[str]]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.vk_id, r.access_until, u.last_message_sent_at
+            FROM requests r
+            JOIN users u ON u.vk_id = r.vk_id
+            WHERE r.id IN (
+                SELECT MAX(id)
+                FROM requests
+                GROUP BY vk_id
+            )
+            AND r.status = 'approved'
+            AND r.access_until IS NOT NULL
+            """
+        ).fetchall()
+        return rows
 
 
 def get_user_by_vk_id(vk_id: int) -> Optional[Tuple[int, str, str]]:

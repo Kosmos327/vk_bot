@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import threading
 import time
 from typing import Optional
 
@@ -24,6 +25,7 @@ from db import (
     mark_latest_request_receipt,
     get_user_details,
     set_latest_request_status,
+    touch_user_activity,
 )
 from keyboards import (
     BUTTON_BENEFITS,
@@ -42,6 +44,7 @@ from texts import (
     UNKNOWN_TEXT,
     WELCOME_TEXT,
 )
+from scheduler import scheduler_loop
 
 
 logging.basicConfig(
@@ -310,6 +313,14 @@ def main() -> None:
     longpoll = VkBotLongPoll(vk_session, group_id)
     vk_api = vk_session.get_api()
 
+    scheduler_thread = threading.Thread(
+        target=scheduler_loop,
+        args=(vk_api,),
+        daemon=True,
+        name="reminder-scheduler",
+    )
+    scheduler_thread.start()
+
     logger.info("Бот запущен и слушает события Long Poll")
 
     while True:
@@ -328,6 +339,7 @@ def main() -> None:
                         continue
 
                     save_user(vk_api, from_id)
+                    touch_user_activity(from_id)
 
                     if from_id == admin_id and handle_admin_command(
                         vk_api, incoming_text, admin_id, club_invite_link
