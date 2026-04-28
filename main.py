@@ -17,9 +17,12 @@ from db import (
     create_request,
     get_user_by_vk_id,
     init_db,
+    list_active_users,
+    list_expired_users,
     list_pending_requests,
     list_requests,
     mark_latest_request_receipt,
+    get_user_details,
     set_latest_request_status,
 )
 from keyboards import (
@@ -134,13 +137,13 @@ def has_receipt_attachment(message: dict) -> bool:
     return False
 
 
-def build_approved_text(club_invite_link: str) -> str:
+def build_approved_text(club_invite_link: str, access_until: str) -> str:
     return (
         "Оплата подтверждена ✅\n\n"
         "Добро пожаловать в АвтоКлуб НСК!\n\n"
         "Ссылка для входа в закрытый клуб:\n"
         f"{club_invite_link}\n\n"
-        "Доступ действует 30 дней."
+        f"Доступ действует до: {access_until}"
     )
 
 
@@ -156,8 +159,8 @@ def handle_admin_command(vk_api, text: str, admin_id: int, club_invite_link: str
             return True
 
         lines = [
-            f"{vk_id} | {status} | {receipt_received} | {created_at}"
-            for vk_id, status, receipt_received, created_at in requests
+            f"{vk_id} | {status} | {receipt_received} | {created_at} | {approved_at or '-'} | {access_until or '-'}"
+            for vk_id, status, receipt_received, created_at, approved_at, access_until in requests
         ]
         send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
         return True
@@ -181,8 +184,8 @@ def handle_admin_command(vk_api, text: str, admin_id: int, club_invite_link: str
             return True
 
         vk_id = int(parts[1])
-        updated = approve_latest_request(vk_id=vk_id)
-        if not updated:
+        approved_data = approve_latest_request(vk_id=vk_id)
+        if not approved_data:
             send_message(vk_api, peer_id=admin_id, text="У пользователя нет заявок")
             return True
 
@@ -190,8 +193,72 @@ def handle_admin_command(vk_api, text: str, admin_id: int, club_invite_link: str
             send_message(vk_api, peer_id=admin_id, text="Ошибка: CLUB_INVITE_LINK не заполнен в .env")
             return True
 
-        send_message(vk_api, peer_id=vk_id, text=build_approved_text(club_invite_link))
-        send_message(vk_api, peer_id=admin_id, text=f"Пользователь {vk_id} подтверждён, ссылка отправлена.")
+        access_until, is_renewal = approved_data
+        send_message(vk_api, peer_id=vk_id, text=build_approved_text(club_invite_link, access_until))
+        renewal_note = " (продление)" if is_renewal else ""
+        send_message(
+            vk_api,
+            peer_id=admin_id,
+            text=f"Пользователь {vk_id} подтверждён{renewal_note}, ссылка отправлена.",
+        )
+        return True
+
+    if text == "/active":
+        active_users = list_active_users()
+        if not active_users:
+            send_message(vk_api, peer_id=admin_id, text="Нет пользователей с активным доступом")
+            return True
+
+        lines = [f"{vk_id} | {access_until}" for vk_id, access_until in active_users]
+        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        return True
+
+    if text == "/expired":
+        expired_users = list_expired_users()
+        if not expired_users:
+            send_message(vk_api, peer_id=admin_id, text="Нет пользователей с истёкшим доступом")
+            return True
+
+        lines = [f"{vk_id} | {access_until}" for vk_id, access_until in expired_users]
+        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        return True
+
+    if text.startswith("/user "):
+        parts = text.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            return True
+
+        vk_id = int(parts[1])
+        user_details = get_user_details(vk_id)
+        if not user_details:
+            send_message(vk_api, peer_id=admin_id, text="Пользователь не найден")
+            return True
+
+        (
+            user_vk_id,
+            first_name,
+            last_name,
+            first_message_at,
+            status,
+            receipt_received,
+            request_created_at,
+            approved_at,
+            access_until,
+            is_renewal,
+        ) = user_details
+
+        details_text = (
+            f"vk_id: {user_vk_id}\n"
+            f"имя: {first_name} {last_name}\n"
+            f"дата первого сообщения: {first_message_at}\n"
+            f"последняя заявка: {request_created_at or '-'}\n"
+            f"статус: {status or '-'}\n"
+            f"receipt_received: {receipt_received if receipt_received is not None else '-'}\n"
+            f"approved_at: {approved_at or '-'}\n"
+            f"access_until: {access_until or '-'}\n"
+            f"is_renewal: {is_renewal if is_renewal is not None else '-'}"
+        )
+        send_message(vk_api, peer_id=admin_id, text=details_text)
         return True
 
     if text == "/stats":
