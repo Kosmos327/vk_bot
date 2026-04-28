@@ -6,6 +6,7 @@ BUTTON_PAYMENT = "Как оплатить"
 BUTTON_PAID = "Я оплатил"
 BUTTON_PARTNERS = "Партнёры"
 BUTTON_QUESTION = "Задать вопрос"
+BUTTON_MY_LINK = "Моя ссылка"
 BUTTON_ADMIN_STATS = "📊 Статистика"
 BUTTON_ADMIN_PENDING = "🕓 Ожидают проверки"
 BUTTON_ADMIN_ACTIVE = "✅ Активные"
@@ -20,6 +21,8 @@ def get_main_keyboard() -> str:
     keyboard.add_button(BUTTON_PAYMENT, color=VkKeyboardColor.POSITIVE)
     keyboard.add_line()
     keyboard.add_button(BUTTON_PAID, color=VkKeyboardColor.POSITIVE)
+    keyboard.add_line()
+    keyboard.add_button(BUTTON_MY_LINK, color=VkKeyboardColor.PRIMARY)
     keyboard.add_line()
     keyboard.add_button(BUTTON_PARTNERS, color=VkKeyboardColor.SECONDARY)
     keyboard.add_button(BUTTON_QUESTION, color=VkKeyboardColor.SECONDARY)
