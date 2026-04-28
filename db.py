@@ -34,6 +34,37 @@ def _migrate_users_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN last_activity_at TEXT")
     if not _column_exists(conn, "users", "last_message_sent_at"):
         conn.execute("ALTER TABLE users ADD COLUMN last_message_sent_at TEXT")
+    if not _column_exists(conn, "users", "referrer_vk_id"):
+        conn.execute("ALTER TABLE users ADD COLUMN referrer_vk_id INTEGER")
+    if not _column_exists(conn, "users", "referral_code"):
+        conn.execute("ALTER TABLE users ADD COLUMN referral_code TEXT")
+    conn.execute(
+        """
+        UPDATE users
+        SET referral_code = 'AC' || vk_id
+        WHERE referral_code IS NULL OR referral_code = ''
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code
+        ON users(referral_code)
+        """
+    )
+
+
+def _migrate_referrals_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS referrals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            referrer_vk_id INTEGER,
+            referred_vk_id INTEGER UNIQUE,
+            created_at TEXT,
+            approved_at TEXT
+        )
+        """
+    )
 
 
 def init_db() -> None:
@@ -47,7 +78,9 @@ def init_db() -> None:
                 last_name TEXT,
                 created_at TEXT,
                 last_activity_at TEXT,
-                last_message_sent_at TEXT
+                last_message_sent_at TEXT,
+                referrer_vk_id INTEGER,
+                referral_code TEXT UNIQUE
             )
             """
         )
@@ -82,6 +115,7 @@ def init_db() -> None:
         )
         _migrate_users_table(conn)
         _migrate_requests_table(conn)
+        _migrate_referrals_table(conn)
         conn.commit()
 
 
@@ -149,7 +183,8 @@ def set_partner_active(partner_id: int, is_active: int) -> bool:
         return True
 
 
-def add_user_if_not_exists(vk_id: int, first_name: str, last_name: str) -> None:
+def add_user_if_not_exists(vk_id: int, first_name: str, last_name: str, referrer_vk_id: Optional[int] = None) -> None:
+    referral_code = f"AC{vk_id}"
     with _connect() as conn:
         conn.execute(
             """
@@ -158,13 +193,61 @@ def add_user_if_not_exists(vk_id: int, first_name: str, last_name: str) -> None:
                 first_name,
                 last_name,
                 created_at,
-                last_activity_at
+                last_activity_at,
+                referrer_vk_id,
+                referral_code
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (vk_id, first_name, last_name, _now(), _now()),
+            (vk_id, first_name, last_name, _now(), _now(), referrer_vk_id, referral_code),
+        )
+        conn.execute(
+            """
+            UPDATE users
+            SET referral_code = COALESCE(NULLIF(referral_code, ''), ?)
+            WHERE vk_id = ?
+            """,
+            (referral_code, vk_id),
         )
         conn.commit()
+
+
+def get_vk_id_by_referral_code(referral_code: str) -> Optional[int]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT vk_id FROM users WHERE referral_code = ?",
+            (referral_code,),
+        ).fetchone()
+        if not row:
+            return None
+        return int(row[0])
+
+
+def set_user_referrer_if_empty(vk_id: int, referrer_vk_id: int) -> bool:
+    if vk_id == referrer_vk_id:
+        return False
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT referrer_vk_id FROM users WHERE vk_id = ?",
+            (vk_id,),
+        ).fetchone()
+        if not row:
+            return False
+        if row[0] is not None:
+            return False
+        conn.execute(
+            "UPDATE users SET referrer_vk_id = ? WHERE vk_id = ?",
+            (referrer_vk_id, vk_id),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO referrals (referrer_vk_id, referred_vk_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (referrer_vk_id, vk_id, _now()),
+        )
+        conn.commit()
+        return True
 
 
 def touch_user_activity(vk_id: int) -> None:
@@ -279,6 +362,59 @@ def get_user_by_vk_id(vk_id: int) -> Optional[Tuple[int, str, str]]:
             (vk_id,),
         ).fetchone()
         return row
+
+
+def get_user_referral_details(vk_id: int) -> Optional[Tuple[int, Optional[str], Optional[int]]]:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT vk_id, referral_code, referrer_vk_id
+            FROM users
+            WHERE vk_id = ?
+            """,
+            (vk_id,),
+        ).fetchone()
+        return row
+
+
+def mark_referral_approved(referred_vk_id: int) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE referrals
+            SET approved_at = COALESCE(approved_at, ?)
+            WHERE referred_vk_id = ?
+            """,
+            (_now(), referred_vk_id),
+        )
+        conn.commit()
+
+
+def list_referrers_by_approved_count() -> List[Tuple[int, int]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT referrer_vk_id, COUNT(*) AS approved_count
+            FROM referrals
+            WHERE approved_at IS NOT NULL
+            GROUP BY referrer_vk_id
+            ORDER BY approved_count DESC, referrer_vk_id ASC
+            """
+        ).fetchall()
+        return rows
+
+
+def count_user_approved_referrals(referrer_vk_id: int) -> int:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM referrals
+            WHERE referrer_vk_id = ? AND approved_at IS NOT NULL
+            """,
+            (referrer_vk_id,),
+        ).fetchone()
+        return row[0] if row else 0
 
 
 def create_request(vk_id: int, status: str = "new") -> None:

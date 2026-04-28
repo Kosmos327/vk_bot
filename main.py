@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import re
 import threading
 import time
 from typing import Optional
@@ -14,19 +15,25 @@ from db import (
     add_user_if_not_exists,
     add_partner,
     approve_latest_request,
+    count_user_approved_referrals,
     count_requests,
     count_users,
     create_request,
+    get_vk_id_by_referral_code,
+    get_user_referral_details,
     get_user_by_vk_id,
     list_active_partners,
     list_partners,
+    list_referrers_by_approved_count,
     init_db,
     list_active_users,
     list_expired_users,
     list_pending_requests,
     list_requests,
     mark_latest_request_receipt,
+    mark_referral_approved,
     get_user_details,
+    set_user_referrer_if_empty,
     set_partner_active,
     set_latest_request_status,
     touch_user_activity,
@@ -42,6 +49,7 @@ from keyboards import (
     BUTTON_PAID,
     BUTTON_PARTNERS,
     BUTTON_PAYMENT,
+    BUTTON_MY_LINK,
     BUTTON_QUESTION,
     get_admin_keyboard,
     get_main_keyboard,
@@ -68,6 +76,7 @@ logger = logging.getLogger("vk_bot")
 PAID_CONFIRMATION_TEXT = "Отлично, отправь скрин оплаты. Администратор проверит и даст доступ."
 RECEIPT_RECEIVED_TEXT = "Скрин оплаты получен ✅ Администратор проверит оплату и выдаст доступ."
 NO_REQUEST_FOR_RECEIPT_TEXT = "Я получил файл, но сначала нажми «Как оплатить», чтобы создать заявку."
+REFERRAL_PATTERN = re.compile(r"^\s*(?:старт|start)\s+(AC\d+)\s*$", re.IGNORECASE)
 
 
 def get_env(name: str) -> str:
@@ -151,7 +160,7 @@ def send_receipt_notification(vk_api, admin_id: int, vk_id: int) -> None:
     send_message(vk_api, peer_id=admin_id, text=admin_text)
 
 
-def save_user(vk_api, from_id: int) -> None:
+def save_user(vk_api, from_id: int, referral_code: Optional[str] = None) -> None:
     user_info = vk_api.users.get(user_ids=from_id)
     if not user_info:
         return
@@ -161,6 +170,10 @@ def save_user(vk_api, from_id: int) -> None:
         first_name=profile.get("first_name", ""),
         last_name=profile.get("last_name", ""),
     )
+    if referral_code:
+        referrer_vk_id = get_vk_id_by_referral_code(referral_code.upper())
+        if referrer_vk_id and referrer_vk_id != from_id:
+            set_user_referrer_if_empty(vk_id=from_id, referrer_vk_id=referrer_vk_id)
 
 
 def has_receipt_attachment(message: dict) -> bool:
@@ -179,6 +192,24 @@ def build_approved_text(club_invite_link: str, access_until: str) -> str:
         "Ссылка для входа в закрытый клуб:\n"
         f"{club_invite_link}\n\n"
         f"Доступ действует до: {access_until}"
+    )
+
+
+def extract_referral_code(raw_text: str) -> Optional[str]:
+    match = REFERRAL_PATTERN.match(raw_text or "")
+    if not match:
+        return None
+    return match.group(1).upper()
+
+
+def build_my_referral_text(group_id: int, vk_id: int) -> str:
+    referral_code = f"AC{vk_id}"
+    return (
+        "Твоя реферальная ссылка:\n\n"
+        f"https://vk.com/im?sel=-{group_id}&ref={referral_code}\n\n"
+        "Приглашай друзей в АвтоКлуб НСК.\n\n"
+        f"Твой код: {referral_code}\n"
+        f"Друг может написать: СТАРТ {referral_code}"
     )
 
 
@@ -257,6 +288,7 @@ def handle_admin_command(
             return True
 
         access_until, is_renewal = approved_data
+        mark_referral_approved(vk_id)
         send_message(vk_api, peer_id=vk_id, text=build_approved_text(club_invite_link, access_until))
         renewal_note = " (продление)" if is_renewal else ""
         send_message(
@@ -329,6 +361,39 @@ def handle_admin_command(
         send_message(vk_api, peer_id=admin_id, text=stats_text)
         return True
 
+    if text == "/referrals":
+        referrals = list_referrers_by_approved_count()
+        if not referrals:
+            send_message(vk_api, peer_id=admin_id, text="Подтверждённых рефералов пока нет")
+            return True
+        lines = [f"{referrer_vk_id} | {approved_count}" for referrer_vk_id, approved_count in referrals]
+        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        return True
+
+    if text.startswith("/refuser "):
+        parts = text.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            send_message(vk_api, peer_id=admin_id, text="Формат: /refuser {vk_id}")
+            return True
+        vk_id = int(parts[1])
+        details = get_user_referral_details(vk_id)
+        if not details:
+            send_message(vk_api, peer_id=admin_id, text="Пользователь не найден")
+            return True
+        user_vk_id, referral_code, referrer_vk_id = details
+        approved_count = count_user_approved_referrals(user_vk_id)
+        send_message(
+            vk_api,
+            peer_id=admin_id,
+            text=(
+                f"vk_id: {user_vk_id}\n"
+                f"referral_code: {referral_code or '-'}\n"
+                f"referrer_vk_id: {referrer_vk_id if referrer_vk_id is not None else '-'}\n"
+                f"approved_referrals: {approved_count}"
+            ),
+        )
+        return True
+
     if text == "/partners":
         partners = list_partners()
         if not partners:
@@ -397,7 +462,7 @@ def handle_admin_command(
     return False
 
 
-def handle_business_actions(vk_api, text: str, from_id: int, admin_id: int) -> Optional[str]:
+def handle_business_actions(vk_api, text: str, from_id: int, admin_id: int, group_id: int) -> Optional[str]:
     if text == BUTTON_PAYMENT.lower():
         create_request(vk_id=from_id, status="new")
         send_admin_notification(vk_api, admin_id=admin_id, vk_id=from_id, status="new")
@@ -409,6 +474,9 @@ def handle_business_actions(vk_api, text: str, from_id: int, admin_id: int) -> O
             send_admin_notification(vk_api, admin_id=admin_id, vk_id=from_id, status="paid")
             return PAID_CONFIRMATION_TEXT
         return "У тебя пока нет заявки. Нажми «Как оплатить», чтобы создать заявку."
+
+    if text == BUTTON_MY_LINK.lower():
+        return build_my_referral_text(group_id=group_id, vk_id=from_id)
 
     return None
 
@@ -464,7 +532,10 @@ def main() -> None:
                     if not from_id:
                         continue
 
-                    save_user(vk_api, from_id)
+                    referral_code = extract_referral_code(raw_text)
+                    if referral_code:
+                        incoming_text = "start"
+                    save_user(vk_api, from_id, referral_code=referral_code)
                     touch_user_activity(from_id)
 
                     if from_id == admin_id and handle_admin_command(
@@ -477,7 +548,7 @@ def main() -> None:
                             continue
 
                     business_response = handle_business_actions(
-                        vk_api, text=incoming_text, from_id=from_id, admin_id=admin_id
+                        vk_api, text=incoming_text, from_id=from_id, admin_id=admin_id, group_id=group_id
                     )
                     if business_response is not None:
                         send_message(vk_api, peer_id=peer_id, text=business_response)
