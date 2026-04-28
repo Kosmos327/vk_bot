@@ -11,6 +11,7 @@
   - «Что входит»
   - «Как оплатить»
   - «Я оплатил»
+  - «Получить скидку»
   - «Партнёры»
   - «Задать вопрос»
 - Сохраняет пользователей в локальную БД `database.db` при первом сообщении.
@@ -34,6 +35,9 @@
   - `/expired`
   - `/user {vk_id}`
   - `/stats`
+  - `/codes`
+  - `/checkcode {code}`
+  - `/usecode {code}`
 
 ## Структура проекта
 
@@ -169,6 +173,27 @@ CLUB_INVITE_LINK=https://vk.me/join/...
 - `created_at` — `TEXT`
 - `approved_at` — `TEXT`
 
+### Таблица `discount_codes`
+
+- `id` — `INTEGER PRIMARY KEY AUTOINCREMENT`
+- `code` — `TEXT UNIQUE NOT NULL`
+- `vk_id` — `INTEGER NOT NULL`
+- `partner_id` — `INTEGER NOT NULL`
+- `status` — `TEXT DEFAULT 'active'`
+- `created_at` — `TEXT`
+- `expires_at` — `TEXT`
+- `used_at` — `TEXT`
+- `used_by_admin_id` — `INTEGER`
+
+### Таблица `discount_code_intents`
+
+- `id` — `INTEGER PRIMARY KEY AUTOINCREMENT`
+- `vk_id` — `INTEGER NOT NULL`
+- `partner_id` — `INTEGER NOT NULL`
+- `status` — `TEXT DEFAULT 'pending'`
+- `created_at` — `TEXT`
+- `expires_at` — `TEXT`
+
 ## 8) Партнёры и скидки
 
 Для управления каталогом партнёров доступны админ-команды:
@@ -178,6 +203,18 @@ CLUB_INVITE_LINK=https://vk.me/join/...
 - `/partners`
 - `/partneroff {id}`
 - `/partneron {id}`
+
+## Динамические скидочные коды
+
+- Кнопка **«Получить скидку»** не создаёт код автоматически.
+- Сначала участник выбирает партнёра сообщением: `скидка {id}`.
+- После этого бот создаёт intent подтверждения на 10 минут и просит подтверждение.
+- Код создаётся только после явного подтверждения: `ДА {id}`.
+- Формат кода: `AC-XXXXXX`.
+- Код действует 15 минут и является одноразовым.
+- Проверка валидности выполняется админ-командой `/checkcode {code}`.
+- Применение кода выполняется админ-командой `/usecode {code}`.
+- Просмотр последних 20 кодов: `/codes` или кнопка **«🎟 Коды»** в админ-панели.
 
 ## 6) Установка и запуск
 
