@@ -12,11 +12,14 @@ from vk_api.exceptions import ApiError
 
 from db import (
     add_user_if_not_exists,
+    add_partner,
     approve_latest_request,
     count_requests,
     count_users,
     create_request,
     get_user_by_vk_id,
+    list_active_partners,
+    list_partners,
     init_db,
     list_active_users,
     list_expired_users,
@@ -24,6 +27,7 @@ from db import (
     list_requests,
     mark_latest_request_receipt,
     get_user_details,
+    set_partner_active,
     set_latest_request_status,
     touch_user_activity,
 )
@@ -31,6 +35,7 @@ from keyboards import (
     BUTTON_ADMIN_ACTIVE,
     BUTTON_ADMIN_EXPIRED,
     BUTTON_ADMIN_PENDING,
+    BUTTON_ADMIN_PARTNERS,
     BUTTON_ADMIN_REQUESTS,
     BUTTON_ADMIN_STATS,
     BUTTON_BENEFITS,
@@ -84,7 +89,7 @@ def resolve_response(text: str) -> str:
     if text == BUTTON_PAYMENT.lower():
         return PAYMENT_TEXT
     if text == BUTTON_PARTNERS.lower():
-        return PARTNERS_TEXT
+        return build_partners_response()
     if text == BUTTON_QUESTION.lower():
         return QUESTION_TEXT
     return UNKNOWN_TEXT
@@ -97,6 +102,27 @@ def send_message(vk_api, peer_id: int, text: str, keyboard: Optional[str] = None
         random_id=random.randint(1, 2_147_483_647),
         keyboard=keyboard or get_main_keyboard(),
     )
+
+
+def _safe_text(value: Optional[str]) -> str:
+    return value if value else "—"
+
+
+def build_partners_response() -> str:
+    partners = list_active_partners()
+    if not partners:
+        return PARTNERS_TEXT
+
+    lines = ["Партнёры АвтоКлуб НСК:\n"]
+    for idx, (_, name, category, discount, address, phone, _) in enumerate(partners, start=1):
+        lines.append(
+            f"{idx}. {name}\n"
+            f"Категория: {_safe_text(category)}\n"
+            f"Скидка: {_safe_text(discount)}\n"
+            f"Адрес: {_safe_text(address)}\n"
+            f"Телефон: {_safe_text(phone)}"
+        )
+    return "\n\n".join(lines)
 
 
 def send_admin_notification(vk_api, admin_id: int, vk_id: int, status: str) -> None:
@@ -156,7 +182,13 @@ def build_approved_text(club_invite_link: str, access_until: str) -> str:
     )
 
 
-def handle_admin_command(vk_api, text: str, admin_id: int, club_invite_link: str) -> bool:
+def handle_admin_command(
+    vk_api,
+    text: str,
+    admin_id: int,
+    club_invite_link: str,
+    raw_text: str,
+) -> bool:
     if text == "/admin":
         send_message(
             vk_api,
@@ -176,6 +208,8 @@ def handle_admin_command(vk_api, text: str, admin_id: int, club_invite_link: str
         text = "/expired"
     elif text == normalize_text(BUTTON_ADMIN_REQUESTS):
         text = "/requests"
+    elif text == normalize_text(BUTTON_ADMIN_PARTNERS):
+        text = "/partners"
 
     if text == "/users":
         send_message(vk_api, peer_id=admin_id, text=f"Пользователей: {count_users()}")
@@ -295,6 +329,71 @@ def handle_admin_command(vk_api, text: str, admin_id: int, club_invite_link: str
         send_message(vk_api, peer_id=admin_id, text=stats_text)
         return True
 
+    if text == "/partners":
+        partners = list_partners()
+        if not partners:
+            send_message(vk_api, peer_id=admin_id, text="Партнёров пока нет")
+            return True
+
+        lines = [f"{partner_id} | {name} | {category or '-'} | {discount or '-'} | {is_active}" for partner_id, name, category, discount, is_active in partners]
+        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        return True
+
+    if text.startswith("/partneroff "):
+        parts = text.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            send_message(vk_api, peer_id=admin_id, text="Формат: /partneroff {id}")
+            return True
+
+        partner_id = int(parts[1])
+        if not set_partner_active(partner_id=partner_id, is_active=0):
+            send_message(vk_api, peer_id=admin_id, text="Партнёр с таким id не найден")
+            return True
+        send_message(vk_api, peer_id=admin_id, text=f"Партнёр {partner_id} деактивирован")
+        return True
+
+    if text.startswith("/partneron "):
+        parts = text.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            send_message(vk_api, peer_id=admin_id, text="Формат: /partneron {id}")
+            return True
+
+        partner_id = int(parts[1])
+        if not set_partner_active(partner_id=partner_id, is_active=1):
+            send_message(vk_api, peer_id=admin_id, text="Партнёр с таким id не найден")
+            return True
+        send_message(vk_api, peer_id=admin_id, text=f"Партнёр {partner_id} активирован")
+        return True
+
+    if text.startswith("/addpartner"):
+        parts = [part.strip() for part in raw_text.split("|")]
+        if len(parts) != 7 or parts[0].strip().lower() != "/addpartner":
+            send_message(
+                vk_api,
+                peer_id=admin_id,
+                text=(
+                    "Формат:\n"
+                    "/addpartner | Название | Категория | Скидка | Адрес | Телефон | Описание"
+                ),
+            )
+            return True
+
+        _, name, category, discount, address, phone, description = parts
+        if not name:
+            send_message(vk_api, peer_id=admin_id, text="Название партнёра обязательно")
+            return True
+
+        partner_id = add_partner(
+            name=name,
+            category=category,
+            discount=discount,
+            address=address,
+            phone=phone,
+            description=description,
+        )
+        send_message(vk_api, peer_id=admin_id, text=f"Партнёр добавлен с id={partner_id}")
+        return True
+
     return False
 
 
@@ -357,6 +456,7 @@ def main() -> None:
 
                 try:
                     message = event.object.message
+                    raw_text = (message.get("text") or "").strip()
                     incoming_text = normalize_text(message.get("text"))
                     peer_id = message["peer_id"]
                     from_id = message.get("from_id")
@@ -368,7 +468,7 @@ def main() -> None:
                     touch_user_activity(from_id)
 
                     if from_id == admin_id and handle_admin_command(
-                        vk_api, incoming_text, admin_id, club_invite_link
+                        vk_api, incoming_text, admin_id, club_invite_link, raw_text
                     ):
                         continue
 

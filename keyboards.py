@@ -11,6 +11,7 @@ BUTTON_ADMIN_PENDING = "🕓 Ожидают проверки"
 BUTTON_ADMIN_ACTIVE = "✅ Активные"
 BUTTON_ADMIN_EXPIRED = "❌ Истёкшие"
 BUTTON_ADMIN_REQUESTS = "📋 Все заявки"
+BUTTON_ADMIN_PARTNERS = "🤝 Партнёры"
 
 
 def get_main_keyboard() -> str:
@@ -34,4 +35,5 @@ def get_admin_keyboard() -> str:
     keyboard.add_button(BUTTON_ADMIN_EXPIRED, color=VkKeyboardColor.NEGATIVE)
     keyboard.add_line()
     keyboard.add_button(BUTTON_ADMIN_REQUESTS, color=VkKeyboardColor.SECONDARY)
+    keyboard.add_button(BUTTON_ADMIN_PARTNERS, color=VkKeyboardColor.SECONDARY)
     return keyboard.get_keyboard()

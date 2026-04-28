@@ -65,9 +65,88 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS partners (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                category TEXT,
+                discount TEXT,
+                address TEXT,
+                phone TEXT,
+                description TEXT,
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT
+            )
+            """
+        )
         _migrate_users_table(conn)
         _migrate_requests_table(conn)
         conn.commit()
+
+
+def add_partner(
+    name: str,
+    category: str,
+    discount: str,
+    address: str,
+    phone: str,
+    description: str,
+) -> int:
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO partners (
+                name,
+                category,
+                discount,
+                address,
+                phone,
+                description,
+                is_active,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (name, category, discount, address, phone, description, _now()),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def list_active_partners() -> List[Tuple[int, str, Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, category, discount, address, phone, description
+            FROM partners
+            WHERE is_active = 1
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        return rows
+
+
+def list_partners() -> List[Tuple[int, str, Optional[str], Optional[str], int]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, category, discount, is_active
+            FROM partners
+            ORDER BY id DESC
+            """
+        ).fetchall()
+        return rows
+
+
+def set_partner_active(partner_id: int, is_active: int) -> bool:
+    with _connect() as conn:
+        row = conn.execute("SELECT id FROM partners WHERE id = ?", (partner_id,)).fetchone()
+        if not row:
+            return False
+        conn.execute("UPDATE partners SET is_active = ? WHERE id = ?", (is_active, partner_id))
+        conn.commit()
+        return True
 
 
 def add_user_if_not_exists(vk_id: int, first_name: str, last_name: str) -> None:
