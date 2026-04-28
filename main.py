@@ -28,11 +28,17 @@ from db import (
     touch_user_activity,
 )
 from keyboards import (
+    BUTTON_ADMIN_ACTIVE,
+    BUTTON_ADMIN_EXPIRED,
+    BUTTON_ADMIN_PENDING,
+    BUTTON_ADMIN_REQUESTS,
+    BUTTON_ADMIN_STATS,
     BUTTON_BENEFITS,
     BUTTON_PAID,
     BUTTON_PARTNERS,
     BUTTON_PAYMENT,
     BUTTON_QUESTION,
+    get_admin_keyboard,
     get_main_keyboard,
 )
 from texts import (
@@ -84,12 +90,12 @@ def resolve_response(text: str) -> str:
     return UNKNOWN_TEXT
 
 
-def send_message(vk_api, peer_id: int, text: str) -> None:
+def send_message(vk_api, peer_id: int, text: str, keyboard: Optional[str] = None) -> None:
     vk_api.messages.send(
         peer_id=peer_id,
         message=text,
         random_id=random.randint(1, 2_147_483_647),
-        keyboard=get_main_keyboard(),
+        keyboard=keyboard or get_main_keyboard(),
     )
 
 
@@ -151,6 +157,26 @@ def build_approved_text(club_invite_link: str, access_until: str) -> str:
 
 
 def handle_admin_command(vk_api, text: str, admin_id: int, club_invite_link: str) -> bool:
+    if text == "/admin":
+        send_message(
+            vk_api,
+            peer_id=admin_id,
+            text="Админ-панель АвтоКлуб НСК",
+            keyboard=get_admin_keyboard(),
+        )
+        return True
+
+    if text == normalize_text(BUTTON_ADMIN_STATS):
+        text = "/stats"
+    elif text == normalize_text(BUTTON_ADMIN_PENDING):
+        text = "/pending"
+    elif text == normalize_text(BUTTON_ADMIN_ACTIVE):
+        text = "/active"
+    elif text == normalize_text(BUTTON_ADMIN_EXPIRED):
+        text = "/expired"
+    elif text == normalize_text(BUTTON_ADMIN_REQUESTS):
+        text = "/requests"
+
     if text == "/users":
         send_message(vk_api, peer_id=admin_id, text=f"Пользователей: {count_users()}")
         return True
@@ -175,10 +201,10 @@ def handle_admin_command(vk_api, text: str, admin_id: int, club_invite_link: str
             return True
 
         lines = [
-            f"{vk_id} | {status} | {receipt_received} | {created_at}"
+            f"{vk_id} | {status} | {receipt_received} | {created_at}\nПодтвердить: /approve {vk_id}"
             for vk_id, status, receipt_received, created_at in requests
         ]
-        send_message(vk_api, peer_id=admin_id, text="\n".join(lines))
+        send_message(vk_api, peer_id=admin_id, text="\n\n".join(lines))
         return True
 
     if text.startswith("/approve "):
