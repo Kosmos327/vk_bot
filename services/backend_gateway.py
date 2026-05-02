@@ -24,7 +24,8 @@ class BackendGateway:
         return {"X-Bot-Api-Token": self.bot_api_token}
 
     def _request(self, method: str, path: str, *, params: Optional[dict[str, Any]] = None, json: Optional[dict[str, Any]] = None) -> Any:
-        url = f"{self.base_url.rstrip('/')}{path}"
+        clean_path = "/" + path.lstrip("/")
+        url = f"{self.base_url.rstrip('/')}{clean_path}"
         try:
             response = requests.request(method, url, params=params, json=json, headers=self._headers(), timeout=self.timeout)
         except requests.RequestException:
@@ -39,6 +40,8 @@ class BackendGateway:
                 if isinstance(detail, dict):
                     code = detail.get("code", code)
                     message = detail.get("message", message)
+                elif isinstance(detail, str) and detail.strip():
+                    message = detail.strip()
             except ValueError:
                 pass
             raise BackendApiError(code, message, response.status_code)

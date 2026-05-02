@@ -4,6 +4,8 @@ from typing import Optional
 PARTNER_PATTERN = re.compile(r"^\s*партн[её]р\s+(\d+)\s*$", re.IGNORECASE)
 SERVICE_PATTERN = re.compile(r"^\s*услуга\s+(\d+)\s*$", re.IGNORECASE)
 CODE_PATTERN = re.compile(r"^\s*код\s+(\d+)\s*$", re.IGNORECASE)
+LEGACY_DISCOUNT_PATTERN = re.compile(r"^\s*скидка\s+(\d+)\s*$", re.IGNORECASE)
+LEGACY_CONFIRM_PATTERN = re.compile(r"^\s*да\s+(\d+)\s*$", re.IGNORECASE)
 
 
 def parse_partner_command(text: str) -> Optional[int]:
@@ -19,3 +21,11 @@ def parse_service_command(text: str) -> Optional[int]:
 def parse_code_command(text: str) -> Optional[int]:
     m = CODE_PATTERN.match(text or "")
     return int(m.group(1)) if m else None
+
+
+def is_legacy_discount_command(text: str) -> bool:
+    return LEGACY_DISCOUNT_PATTERN.match(text or "") is not None
+
+
+def is_legacy_confirm_command(text: str) -> bool:
+    return LEGACY_CONFIRM_PATTERN.match(text or "") is not None
