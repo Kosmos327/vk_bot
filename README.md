@@ -90,3 +90,36 @@ Backend должен быть доступен по `BACKEND_BASE_URL` в backen
 - `no_subscription` — у пользователя неактивна подписка.
 - `monthly_limit` — превышен месячный лимит выдачи кода у партнёра.
 - `receipt URL not extracted` — VK вложение без извлекаемого URL; отправить фото/документ с доступной ссылкой.
+
+## Legacy SQLite admin commands
+
+Эти команды считаются legacy и работают только с локальной `database.db` через `db.py`:
+- `/admin`
+- `/addpartner`
+- `/partners`
+- `/partneroff`
+- `/partneron`
+- `/approve`
+- `/requests`
+- `/pending`
+- `/active`
+- `/expired`
+- `/user`
+- `/codes`
+- `/checkcode`
+- `/usecode`
+- `/referrals`
+- `/refuser`
+
+Важно:
+- Эти команды **НЕ управляют backend CRM**.
+- Актуальные партнёры/услуги/коды/оплаты находятся в backend CRM.
+- В `VK_BOT_USE_BACKEND=true` использование legacy-команд в production не рекомендуется.
+- При вызове legacy-команд админ видит предупреждение: `Legacy SQLite admin command. Основной источник данных сейчас backend CRM.`
+
+### Legacy scheduler
+- Legacy SQLite scheduler автонапоминаний запускается только в `VK_BOT_USE_BACKEND=false`.
+- В backend mode запуск отключён и логируется: `Legacy SQLite scheduler disabled in backend mode.`
+
+### План будущей чистки
+- После ручного smoke-check можно удалить legacy SQLite-контур или вынести его в отдельную ветку.

@@ -136,6 +136,10 @@ def _process_expired_access(vk_api, now: datetime) -> None:
             _try_send_reminder(vk_api, vk_id=vk_id, text=ACCESS_EXPIRED_TEXT, now=now)
 
 
+def should_start_legacy_scheduler(vk_bot_use_backend: bool) -> bool:
+    return not vk_bot_use_backend
+
+
 def scheduler_loop(vk_api) -> None:
     logger.info("Планировщик автонапоминаний запущен")
 

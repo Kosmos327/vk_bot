@@ -28,7 +28,7 @@ def mask_config_for_debug(config: Config) -> dict[str, str]:
     }
 
 
-def format_debug_status(config: Config, user_state_size: int) -> str:
+def format_debug_status(config: Config, user_state_size: int, legacy_admin_enabled: bool = True, legacy_scheduler_enabled: bool = False) -> str:
     data = mask_config_for_debug(config)
     lines = [
         "Debug status:",
@@ -38,6 +38,8 @@ def format_debug_status(config: Config, user_state_size: int) -> str:
         f"VK_GROUP_ID: {data['VK_GROUP_ID']}",
         f"ADMIN_ID: {data['ADMIN_ID']}",
         f"USER_STATE size: {user_state_size}",
+        f"legacy sqlite admin: {'enabled' if legacy_admin_enabled else 'disabled'}",
+        f"legacy scheduler: {'enabled' if legacy_scheduler_enabled else 'disabled'}",
     ]
     if not config.vk_bot_use_backend:
         lines.append("Warning: legacy mode enabled (VK_BOT_USE_BACKEND=false).")
