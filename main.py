@@ -12,8 +12,9 @@ from config import load_config
 from diagnostics import format_debug_status, format_health_status
 from db import init_db
 from keyboards import BUTTON_HELP, BUTTON_MAIN_MENU, BUTTON_MY_CODES, BUTTON_PARTNERS, BUTTON_SUBSCRIPTION, get_admin_keyboard, get_main_keyboard
+from legacy_admin import format_legacy_warning, handle_legacy_admin_command, is_legacy_admin_command, should_allow_legacy_admin_command
 from routing import is_legacy_confirm_command, is_legacy_discount_command, parse_code_command, parse_partner_command, parse_service_command
-from scheduler import scheduler_loop
+from scheduler import scheduler_loop, should_start_legacy_scheduler
 from services.backend_gateway import BackendApiError, BackendGateway
 from state import USER_STATE, get_user_state, reset_user_state
 from texts import HELP_TEXT, START_TEXT
@@ -46,8 +47,10 @@ def main() -> None:
     longpoll = VkBotLongPoll(vk_session, config.vk_group_id)
     vk_api = vk_session.get_api()
 
-    if not config.vk_bot_use_backend:
+    if should_start_legacy_scheduler(config.vk_bot_use_backend):
         threading.Thread(target=scheduler_loop, args=(vk_api,), daemon=True).start()
+    else:
+        logger.info("Legacy SQLite scheduler disabled in backend mode.")
 
     for event in longpoll.listen():
         if event.type != VkBotEventType.MESSAGE_NEW:
@@ -62,7 +65,7 @@ def main() -> None:
 
         try:
             if from_id == config.admin_id and text == "/debug":
-                send_message(vk_api, peer_id, format_debug_status(config, user_state_size=len(USER_STATE)))
+                send_message(vk_api, peer_id, format_debug_status(config, user_state_size=len(USER_STATE), legacy_admin_enabled=True, legacy_scheduler_enabled=should_start_legacy_scheduler(config.vk_bot_use_backend)))
                 continue
 
             if from_id == config.admin_id and text == "/health":
@@ -71,6 +74,18 @@ def main() -> None:
 
             if text in {"/debug", "/health"}:
                 send_message(vk_api, peer_id, "Команда недоступна")
+                continue
+
+            if is_legacy_admin_command(raw_text):
+                if not should_allow_legacy_admin_command(config.vk_bot_use_backend, from_id, config.admin_id):
+                    send_message(vk_api, peer_id, "Команда недоступна.")
+                    continue
+                legacy_text, legacy_keyboard = handle_legacy_admin_command(raw_text)
+                legacy_text = format_legacy_warning(legacy_text) if config.vk_bot_use_backend else legacy_text
+                if legacy_keyboard == "admin":
+                    send_message(vk_api, peer_id, legacy_text, get_admin_keyboard())
+                else:
+                    send_message(vk_api, peer_id, legacy_text)
                 continue
 
             if not config.vk_bot_use_backend:
@@ -194,10 +209,6 @@ def main() -> None:
             if text in {normalize_text(BUTTON_MAIN_MENU), "меню"}:
                 reset_user_state(from_id)
                 send_message(vk_api, peer_id, "Главное меню", get_main_keyboard())
-                continue
-
-            if from_id == config.admin_id and text == "/admin":
-                send_message(vk_api, peer_id, "Админ-панель (Legacy SQLite admin mode)", get_admin_keyboard())
                 continue
 
             send_message(vk_api, peer_id, "Выберите действие в меню.")
