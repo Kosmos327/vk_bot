@@ -1,5 +1,11 @@
+import pytest
+import requests
+
+from config import load_config
+from routing import is_legacy_confirm_command, is_legacy_discount_command
 from services.backend_gateway import BackendApiError, BackendGateway
-from routing import parse_code_command, parse_partner_command, parse_service_command
+from state import USER_STATE, get_user_state, reset_user_state
+from vk_attachments import extract_attachment_url
 
 
 class DummyResponse:
@@ -12,39 +18,71 @@ class DummyResponse:
         return self._payload
 
 
-def test_structured_backend_error(monkeypatch):
-    def fake_request(*args, **kwargs):
+def test_config_validation_backend_mode_missing_backend(monkeypatch):
+    monkeypatch.setenv("VK_BOT_USE_BACKEND", "true")
+    monkeypatch.setenv("VK_GROUP_TOKEN", "vk")
+    monkeypatch.setenv("VK_GROUP_ID", "1")
+    monkeypatch.setenv("ADMIN_ID", "1")
+    monkeypatch.delenv("BACKEND_BASE_URL", raising=False)
+    monkeypatch.delenv("BOT_API_TOKEN", raising=False)
+    with pytest.raises(ValueError):
+        load_config()
+
+
+def test_config_validation_legacy_mode_backend_optional(monkeypatch):
+    monkeypatch.setenv("VK_BOT_USE_BACKEND", "false")
+    monkeypatch.setenv("VK_GROUP_TOKEN", "vk")
+    monkeypatch.setenv("VK_GROUP_ID", "1")
+    monkeypatch.setenv("ADMIN_ID", "1")
+    monkeypatch.delenv("BACKEND_BASE_URL", raising=False)
+    monkeypatch.delenv("BOT_API_TOKEN", raising=False)
+    cfg = load_config()
+    assert cfg.vk_bot_use_backend is False
+
+
+def test_gateway_url_join_and_structured_error(monkeypatch):
+    captured = {}
+
+    def fake_request(method, url, **kwargs):
+        captured["url"] = url
         return DummyResponse(400, {"detail": {"code": "monthly_limit", "message": "Лимит"}})
 
     monkeypatch.setattr("services.backend_gateway.requests.request", fake_request)
-    gw = BackendGateway("https://example.com", "token")
-    try:
-        gw.get_categories()
-    except BackendApiError as e:
-        assert e.code == "monthly_limit"
-        assert e.message == "Лимит"
+    gw = BackendGateway("https://example.com/", "t")
+    with pytest.raises(BackendApiError) as e:
+        gw._request("GET", "api/v1/vk/catalog/categories")
+    assert captured["url"] == "https://example.com/api/v1/vk/catalog/categories"
+    assert e.value.code == "monthly_limit"
 
 
-def test_gateway_adds_token_header(monkeypatch):
-    holder = {}
-
-    def fake_request(method, url, **kwargs):
-        holder.update(kwargs)
-        return DummyResponse(200, [], text='[]')
+def test_gateway_network_error_to_backend_unavailable(monkeypatch):
+    def fake_request(*args, **kwargs):
+        raise requests.RequestException("boom")
 
     monkeypatch.setattr("services.backend_gateway.requests.request", fake_request)
-    gw = BackendGateway("https://example.com", "abc")
-    gw.get_categories()
-    assert holder["headers"]["X-Bot-Api-Token"] == "abc"
+    gw = BackendGateway("https://example.com", "t")
+    with pytest.raises(BackendApiError) as e:
+        gw.get_categories()
+    assert e.value.code == "backend_unavailable"
 
 
-def test_routing_helpers():
-    assert parse_partner_command("Партнёр 123") == 123
-    assert parse_service_command("Услуга 456") == 456
-    assert parse_code_command("Код 456") == 456
+def test_routing_legacy_aliases():
+    assert is_legacy_discount_command("скидка 1")
+    assert is_legacy_confirm_command("ДА 1")
 
 
-def test_codes_formatting_empty():
-    codes = []
-    formatted = "\n".join([str(c) for c in codes])
-    assert formatted == ""
+def test_state_reset_and_no_partner_hint():
+    user_id = 42
+    state = get_user_state(user_id)
+    state["last_partner_id"] = 123
+    reset_user_state(user_id)
+    assert user_id not in USER_STATE
+
+
+def test_receipt_extractors():
+    msg = {"attachments": [{"type": "photo", "photo": {"sizes": [{"width": 50, "height": 50, "url": "small"}, {"width": 100, "height": 100, "url": "big"}]}}]}
+    assert extract_attachment_url(msg) == "big"
+    doc = {"attachments": [{"type": "doc", "doc": {"url": "doc-url"}}]}
+    assert extract_attachment_url(doc) == "doc-url"
+    unknown = {"attachments": [{"type": "audio"}]}
+    assert extract_attachment_url(unknown) is None

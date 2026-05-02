@@ -29,12 +29,27 @@ def _get_bool_env(name: str, default: bool = True) -> bool:
 
 
 def load_config() -> Config:
+    use_backend = _get_bool_env("VK_BOT_USE_BACKEND", default=True)
+
+    vk_group_token = _get_required_env("VK_GROUP_TOKEN")
+    vk_group_id = int(_get_required_env("VK_GROUP_ID"))
+    admin_id = int(_get_required_env("ADMIN_ID"))
+
+    backend_base_url = os.getenv("BACKEND_BASE_URL", "").strip()
+    bot_api_token = os.getenv("BOT_API_TOKEN", "").strip()
+
+    if use_backend:
+        if not backend_base_url:
+            raise ValueError("VK_BOT_USE_BACKEND=true: не задана переменная окружения BACKEND_BASE_URL")
+        if not bot_api_token:
+            raise ValueError("VK_BOT_USE_BACKEND=true: не задана переменная окружения BOT_API_TOKEN")
+
     return Config(
-        vk_group_token=_get_required_env("VK_GROUP_TOKEN"),
-        vk_group_id=int(_get_required_env("VK_GROUP_ID")),
-        admin_id=int(_get_required_env("ADMIN_ID")),
+        vk_group_token=vk_group_token,
+        vk_group_id=vk_group_id,
+        admin_id=admin_id,
         club_invite_link=os.getenv("CLUB_INVITE_LINK", "").strip(),
-        backend_base_url=_get_required_env("BACKEND_BASE_URL"),
-        bot_api_token=_get_required_env("BOT_API_TOKEN"),
-        vk_bot_use_backend=_get_bool_env("VK_BOT_USE_BACKEND", default=True),
+        backend_base_url=backend_base_url,
+        bot_api_token=bot_api_token,
+        vk_bot_use_backend=use_backend,
     )
