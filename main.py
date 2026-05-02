@@ -9,12 +9,13 @@ from vk_api import VkApi
 from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
 
 from config import load_config
+from diagnostics import format_debug_status, format_health_status
 from db import init_db
 from keyboards import BUTTON_HELP, BUTTON_MAIN_MENU, BUTTON_MY_CODES, BUTTON_PARTNERS, BUTTON_SUBSCRIPTION, get_admin_keyboard, get_main_keyboard
 from routing import is_legacy_confirm_command, is_legacy_discount_command, parse_code_command, parse_partner_command, parse_service_command
 from scheduler import scheduler_loop
 from services.backend_gateway import BackendApiError, BackendGateway
-from state import get_user_state, reset_user_state
+from state import USER_STATE, get_user_state, reset_user_state
 from texts import HELP_TEXT, START_TEXT
 from vk_attachments import extract_attachment_url
 
@@ -60,6 +61,18 @@ def main() -> None:
             continue
 
         try:
+            if from_id == config.admin_id and text == "/debug":
+                send_message(vk_api, peer_id, format_debug_status(config, user_state_size=len(USER_STATE)))
+                continue
+
+            if from_id == config.admin_id and text == "/health":
+                send_message(vk_api, peer_id, format_health_status(config, gateway))
+                continue
+
+            if text in {"/debug", "/health"}:
+                send_message(vk_api, peer_id, "Команда недоступна")
+                continue
+
             if not config.vk_bot_use_backend:
                 if from_id == config.admin_id and text == "/admin":
                     send_message(vk_api, peer_id, "Legacy SQLite admin mode", get_admin_keyboard())

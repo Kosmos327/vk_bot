@@ -89,5 +89,10 @@ class BackendGateway:
     def attach_payment_receipt(self, vk_user_id: int, file_url: str, payment_request_id: int | None = None) -> dict[str, Any]:
         return self._request("POST", "/api/v1/vk/payment-request/receipt", json={"vk_user_id": vk_user_id, "file_url": file_url, "payment_request_id": payment_request_id})
 
+
+    def check_catalog_health(self) -> dict[str, Any]:
+        self._request("GET", "/api/v1/vk/catalog/categories")
+        return {"ok": True, "status": "ok"}
+
     def get_latest_payment_request(self, vk_user_id: int) -> dict[str, Any]:
         return self._request("GET", "/api/v1/vk/payment-request/latest", params={"vk_user_id": vk_user_id})
