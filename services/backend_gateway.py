@@ -54,10 +54,10 @@ class BackendGateway:
             return {}
         return response.json()
 
-    def auth_vk_user(self, vk_user_id: int, first_name: str | None = None, last_name: str | None = None, screen_name: str | None = None) -> dict[str, Any]:
+    def auth_vk_user(self, vk_user_id: int | str, first_name: str | None = None, last_name: str | None = None, screen_name: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/api/v1/vk/auth", json={"vk_user_id": self._vk_user_id(vk_user_id), "first_name": first_name, "last_name": last_name, "screen_name": screen_name})
 
-    def get_subscription(self, vk_user_id: int) -> dict[str, Any]:
+    def get_subscription(self, vk_user_id: int | str) -> dict[str, Any]:
         return self._request("GET", "/api/v1/vk/subscription", params={"vk_user_id": self._vk_user_id(vk_user_id)})
 
     def get_categories(self) -> list[dict[str, Any]]:
@@ -75,22 +75,22 @@ class BackendGateway:
     def get_partner_services(self, partner_id: int) -> list[dict[str, Any]]:
         return self._request("GET", f"/api/v1/vk/partners/{partner_id}/services")
 
-    def request_discount_code(self, vk_user_id: int, partner_id: int, partner_service_id: int) -> dict[str, Any]:
+    def request_discount_code(self, vk_user_id: int | str, partner_id: int, partner_service_id: int) -> dict[str, Any]:
         return self._request("POST", "/api/v1/vk/discount-codes/request", json={"vk_user_id": self._vk_user_id(vk_user_id), "partner_id": partner_id, "partner_service_id": partner_service_id})
 
-    def get_my_codes(self, vk_user_id: int, limit: int = 20, offset: int = 0, status: str | None = None) -> list[dict[str, Any]]:
+    def get_my_codes(self, vk_user_id: int | str, limit: int = 20, offset: int = 0, status: str | None = None) -> list[dict[str, Any]]:
         params = {"vk_user_id": self._vk_user_id(vk_user_id), "limit": limit, "offset": offset}
         if status:
             params["status"] = status
         return self._request("GET", "/api/v1/vk/my-codes", params=params)
 
-    def create_payment_request(self, vk_user_id: int) -> dict[str, Any]:
+    def create_payment_request(self, vk_user_id: int | str) -> dict[str, Any]:
         return self._request("POST", "/api/v1/vk/payment-request", json={"vk_user_id": self._vk_user_id(vk_user_id)})
 
-    def mark_payment_paid(self, vk_user_id: int, payment_request_id: int | None = None) -> dict[str, Any]:
+    def mark_payment_paid(self, vk_user_id: int | str, payment_request_id: int | None = None) -> dict[str, Any]:
         return self._request("POST", "/api/v1/vk/payment-request/mark-paid", json={"vk_user_id": self._vk_user_id(vk_user_id), "payment_request_id": payment_request_id})
 
-    def attach_payment_receipt(self, vk_user_id: int, file_url: str, payment_request_id: int | None = None) -> dict[str, Any]:
+    def attach_payment_receipt(self, vk_user_id: int | str, file_url: str, payment_request_id: int | None = None) -> dict[str, Any]:
         return self._request("POST", "/api/v1/vk/payment-request/receipt", json={"vk_user_id": self._vk_user_id(vk_user_id), "file_url": file_url, "payment_request_id": payment_request_id})
 
 
@@ -98,5 +98,5 @@ class BackendGateway:
         self._request("GET", "/api/v1/vk/catalog/categories")
         return {"ok": True, "status": "ok"}
 
-    def get_latest_payment_request(self, vk_user_id: int) -> dict[str, Any]:
+    def get_latest_payment_request(self, vk_user_id: int | str) -> dict[str, Any]:
         return self._request("GET", "/api/v1/vk/payment-request/latest", params={"vk_user_id": self._vk_user_id(vk_user_id)})
