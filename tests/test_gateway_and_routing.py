@@ -86,3 +86,34 @@ def test_receipt_extractors():
     assert extract_attachment_url(doc) == "doc-url"
     unknown = {"attachments": [{"type": "audio"}]}
     assert extract_attachment_url(unknown) is None
+
+
+@pytest.mark.parametrize(
+    ("method_name", "kwargs", "payload_key", "expected_method"),
+    [
+        ("auth_vk_user", {"vk_user_id": 123}, "json", "POST"),
+        ("get_subscription", {"vk_user_id": 123}, "params", "GET"),
+        ("request_discount_code", {"vk_user_id": 123, "partner_id": 1, "partner_service_id": 2}, "json", "POST"),
+        ("create_payment_request", {"vk_user_id": 123}, "json", "POST"),
+        ("get_latest_payment_request", {"vk_user_id": 123}, "params", "GET"),
+    ],
+)
+def test_gateway_serializes_vk_user_id_as_string(monkeypatch, method_name, kwargs, payload_key, expected_method):
+    captured = {}
+
+    def fake_request(method, url, **request_kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["payload"] = request_kwargs.get(payload_key) or {}
+        return DummyResponse(200, {"ok": True})
+
+    monkeypatch.setattr("services.backend_gateway.requests.request", fake_request)
+    gw = BackendGateway("https://example.com", "t")
+
+    method = getattr(gw, method_name)
+    result = method(**kwargs)
+
+    assert captured["method"] == expected_method
+    assert captured["payload"]["vk_user_id"] == "123"
+    assert isinstance(captured["payload"]["vk_user_id"], str)
+    assert result == {"ok": True}
