@@ -2,6 +2,7 @@ import pytest
 import requests
 
 from config import load_config
+from main import format_service_card, format_service_preview
 from routing import is_legacy_confirm_command, is_legacy_discount_command
 from services.backend_gateway import BackendApiError, BackendGateway
 from state import USER_STATE, get_user_state, reset_user_state
@@ -116,4 +117,47 @@ def test_gateway_serializes_vk_user_id_as_string(monkeypatch, method_name, kwarg
     assert captured["method"] == expected_method
     assert captured["payload"]["vk_user_id"] == "123"
     assert isinstance(captured["payload"]["vk_user_id"], str)
-    assert result == {"ok": True}
+    if method_name == "get_latest_payment_request":
+        assert result is None
+    else:
+        assert result == {"ok": True}
+
+
+def test_get_partners_unwraps_items(monkeypatch):
+    monkeypatch.setattr(
+        "services.backend_gateway.requests.request",
+        lambda *a, **k: DummyResponse(200, {"items": [{"id": 1, "name": "P1"}], "total": 1}),
+    )
+    gw = BackendGateway("https://example.com", "t")
+    assert gw.get_partners() == [{"id": 1, "name": "P1"}]
+
+
+def test_get_partner_services_unwraps_items(monkeypatch):
+    monkeypatch.setattr(
+        "services.backend_gateway.requests.request",
+        lambda *a, **k: DummyResponse(200, {"items": [{"id": 10, "title": "Svc"}], "partner_id": 1}),
+    )
+    gw = BackendGateway("https://example.com", "t")
+    assert gw.get_partner_services(1) == [{"id": 10, "title": "Svc"}]
+
+
+def test_get_latest_payment_request_unwraps_or_none(monkeypatch):
+    responses = iter(
+        [
+            DummyResponse(200, {"payment_request": {"id": 5, "status": "pending"}}),
+            DummyResponse(200, {"payment_request": None}),
+        ]
+    )
+    monkeypatch.setattr("services.backend_gateway.requests.request", lambda *a, **k: next(responses))
+    gw = BackendGateway("https://example.com", "t")
+    assert gw.get_latest_payment_request(1) == {"id": 5, "status": "pending"}
+    assert gw.get_latest_payment_request(1) is None
+
+
+def test_service_formatting_uses_backend_fields():
+    service = {"id": 7, "title": "Стрижка", "description": "Классика", "discount_text": "Скидка 10%", "base_price": 1500}
+    assert format_service_preview(service) == "7. Стрижка — Скидка 10%"
+    card = format_service_card(service)
+    assert "Стрижка" in card
+    assert "Скидка 10%" in card
+    assert "Базовая цена: 1500" in card

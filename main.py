@@ -32,6 +32,21 @@ def send_message(vk_api, peer_id: int, text: str, keyboard: Optional[str] = None
     vk_api.messages.send(peer_id=peer_id, message=text, random_id=random.randint(1, 2_147_483_647), keyboard=keyboard or get_main_keyboard())
 
 
+def format_service_preview(service: dict) -> str:
+    discount = service.get("discount_text") or (f"{service.get('discount_percent')}%" if service.get("discount_percent") is not None else "—")
+    return f"{service.get('id')}. {service.get('title')} — {discount}"
+
+
+def format_service_card(service: dict) -> str:
+    discount = service.get("discount_text") or (f"{service.get('discount_percent')}%" if service.get("discount_percent") is not None else "—")
+    return (
+        f"{service.get('title')}\n"
+        f"Описание: {service.get('description') or '—'}\n"
+        f"Скидка: {discount}\n"
+        f"Базовая цена: {service.get('base_price') or '—'}"
+    )
+
+
 def main() -> None:
     load_dotenv()
     config = load_config()
@@ -130,7 +145,7 @@ def main() -> None:
             if raw_text in state.get("categories", []):
                 state["last_category"] = raw_text
                 partners = gateway.get_partners(category=raw_text, limit=10, offset=0)
-                lines = [f"{i+1}. {p.get('name')} — {p.get('discount_description') or p.get('description') or 'без описания'}" for i, p in enumerate(partners)]
+                lines = [f"{i+1}. {p.get('name')} — {p.get('discount_text') or p.get('description') or 'без описания'}" for i, p in enumerate(partners)]
                 lines.append("Чтобы открыть партнёра, напишите: Партнёр {id}")
                 send_message(vk_api, peer_id, "\n".join(lines))
                 continue
@@ -141,7 +156,7 @@ def main() -> None:
                 services = gateway.get_partner_services(pid)
                 state["last_partner_id"] = pid
                 card = f"{partner.get('name')}\nКатегория: {partner.get('category')}\nОписание: {partner.get('description') or '—'}"
-                svc = [f"{s.get('id')}. {s.get('name')} — {s.get('discount') or s.get('price') or '—'}" for s in services]
+                svc = [format_service_preview(s) for s in services]
                 send_message(vk_api, peer_id, card + "\n\nУслуги:\n" + "\n".join(svc) + "\n\nЧтобы выбрать услугу, напишите: Услуга {service_id}")
                 continue
 
@@ -156,7 +171,7 @@ def main() -> None:
                 if not service:
                     send_message(vk_api, peer_id, "Услуга не найдена. Откройте карточку партнёра заново.")
                     continue
-                send_message(vk_api, peer_id, f"{service.get('name')}\nОписание: {service.get('description') or '—'}\nСкидка: {service.get('discount') or '—'}\nЧтобы получить код, напишите: Код {sid}")
+                send_message(vk_api, peer_id, f"{format_service_card(service)}\nЧтобы получить код, напишите: Код {sid}")
                 continue
 
             cid = parse_code_command(raw_text)
@@ -166,7 +181,7 @@ def main() -> None:
                     send_message(vk_api, peer_id, "Сначала откройте партнёра из каталога, затем выберите услугу и запросите код.")
                     continue
                 code_data = gateway.request_discount_code(from_id, partner_id, cid)
-                send_message(vk_api, peer_id, f"Ваш код: {code_data.get('code')}\nПартнёр: {code_data.get('partner_name')}\nУслуга: {code_data.get('service_name')}\nДействует до: {code_data.get('expires_at')}")
+                send_message(vk_api, peer_id, f"Ваш код: {code_data.get('code')}\nПартнёр: {code_data.get('partner_name')}\nУслуга: {code_data.get('service_title')}\nДействует до: {code_data.get('expires_at')}")
                 continue
 
             if text == normalize_text(BUTTON_MY_CODES):
@@ -176,8 +191,8 @@ def main() -> None:
 
             if text == normalize_text(BUTTON_SUBSCRIPTION):
                 sub = gateway.get_subscription(from_id)
-                if sub.get("active"):
-                    send_message(vk_api, peer_id, f"Подписка активна до: {sub.get('active_until')}")
+                if sub.get("has_active_subscription"):
+                    send_message(vk_api, peer_id, f"Подписка активна до: {sub.get('ends_at')}")
                 else:
                     latest = gateway.get_latest_payment_request(from_id)
                     send_message(vk_api, peer_id, f"Текущая заявка: {latest.get('status')}\nСумма: {latest.get('amount')}\n{latest.get('payment_instructions') or ''}\n\nЧтобы оформить подписку, напишите: Оплатить подписку" if latest else "Чтобы оформить подписку, напишите: Оплатить подписку")
