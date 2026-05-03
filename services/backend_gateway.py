@@ -67,13 +67,15 @@ class BackendGateway:
         params = {"limit": limit, "offset": offset}
         if category:
             params["category"] = category
-        return self._request("GET", "/api/v1/vk/catalog/partners", params=params)
+        response = self._request("GET", "/api/v1/vk/catalog/partners", params=params)
+        return response.get("items", []) if isinstance(response, dict) else []
 
     def get_partner(self, partner_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/v1/vk/partners/{partner_id}")
 
     def get_partner_services(self, partner_id: int) -> list[dict[str, Any]]:
-        return self._request("GET", f"/api/v1/vk/partners/{partner_id}/services")
+        response = self._request("GET", f"/api/v1/vk/partners/{partner_id}/services")
+        return response.get("items", []) if isinstance(response, dict) else []
 
     def request_discount_code(self, vk_user_id: int | str, partner_id: int, partner_service_id: int) -> dict[str, Any]:
         return self._request("POST", "/api/v1/vk/discount-codes/request", json={"vk_user_id": self._vk_user_id(vk_user_id), "partner_id": partner_id, "partner_service_id": partner_service_id})
@@ -98,5 +100,6 @@ class BackendGateway:
         self._request("GET", "/api/v1/vk/catalog/categories")
         return {"ok": True, "status": "ok"}
 
-    def get_latest_payment_request(self, vk_user_id: int | str) -> dict[str, Any]:
-        return self._request("GET", "/api/v1/vk/payment-request/latest", params={"vk_user_id": self._vk_user_id(vk_user_id)})
+    def get_latest_payment_request(self, vk_user_id: int | str) -> dict[str, Any] | None:
+        response = self._request("GET", "/api/v1/vk/payment-request/latest", params={"vk_user_id": self._vk_user_id(vk_user_id)})
+        return response.get("payment_request") if isinstance(response, dict) else None
